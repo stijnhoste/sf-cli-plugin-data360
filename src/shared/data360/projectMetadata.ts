@@ -11,6 +11,7 @@ export type Data360MetadataType = {
   aliases: string[];
   directoryName: string;
   listEndpoint: string;
+  listQuery?: Record<string, string | number | boolean | undefined>;
   detailEndpoint: string;
   createEndpoint: string;
   updateEndpoint: string;
@@ -87,6 +88,7 @@ export const data360MetadataTypes: Data360MetadataType[] = [
     aliases: ['connection', 'connections', 'Data360Connection'],
     directoryName: 'connections',
     listEndpoint: '/connections',
+    listQuery: { connectorType: 'SalesforceDotCom' },
     detailEndpoint: '/connections/:name',
     createEndpoint: '/connections',
     updateEndpoint: '/connections/:name',
@@ -405,7 +407,7 @@ export const listComponents = async (
     return fetchAllPages<Record<string, unknown>>(
       org,
       apiVersion,
-      buildPath(type.listEndpoint),
+      buildPath(type.listEndpoint, undefined, type.listQuery),
       { all: true, batchSize: DEFAULT_BATCH_SIZE },
       undefined,
       type.arrayKey
@@ -415,7 +417,7 @@ export const listComponents = async (
   const page = await fetchPage<Record<string, unknown>>(
     org,
     apiVersion,
-    buildPath(type.listEndpoint),
+    buildPath(type.listEndpoint, undefined, type.listQuery),
     0,
     DEFAULT_BATCH_SIZE,
     undefined,
@@ -423,7 +425,7 @@ export const listComponents = async (
   );
   if (page.data.length) return page.data;
 
-  const response = await ssotGet<unknown>(org, apiVersion, buildPath(type.listEndpoint));
+  const response = await ssotGet<unknown>(org, apiVersion, buildPath(type.listEndpoint, undefined, type.listQuery));
   return getRecordsFromListResponse(response, type.arrayKey);
 };
 

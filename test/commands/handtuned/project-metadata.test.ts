@@ -59,6 +59,45 @@ describe('data360 project metadata', () => {
     );
   });
 
+  it('retrieves Data 360 connections with the API-required connector type filter', async () => {
+    const responses = new Map<string, unknown>([
+      [
+        '/connections?connectorType=SalesforceDotCom',
+        {
+          connections: [{ id: '0hM000000000001', name: 'SalesforceDotCom_Home' }],
+        },
+      ],
+      [
+        '/connections/0hM000000000001',
+        {
+          id: '0hM000000000001',
+          name: 'SalesforceDotCom_Home',
+          connectorType: 'SalesforceDotCom',
+        },
+      ],
+    ]);
+
+    const { result, requestLog } = await runCommand(Data360ProjectRetrieveStart, {
+      flags: {
+        'target-org': {},
+        'api-version': '66.0',
+        timing: false,
+        raw: false,
+        metadata: ['Data360Connection'],
+        'output-dir': tempDir,
+        all: false,
+      },
+      responses,
+    });
+
+    assert.equal(result.files.length, 1);
+    assert.equal(requestLog.length, 2);
+    assert.ok(
+      requestLog[0].url.endsWith('/ssot/connections?connectorType=SalesforceDotCom&batchSize=200&limit=200&offset=0')
+    );
+    assert.ok(requestLog[1].url.endsWith('/ssot/connections/0hM000000000001'));
+  });
+
   it('deploys Data 360 project files with update semantics', async () => {
     const sourceDir = join(tempDir, 'data360', 'data-graphs');
     await mkdir(sourceDir, { recursive: true });
