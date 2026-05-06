@@ -2,7 +2,7 @@
 
 > **DISCLAIMER**: This is NOT an official Salesforce product. It is an unsupported, experimental CLI plugin created for internal exploration and demo purposes. No support, warranty, or maintenance is provided. Use at your own risk. This plugin is not endorsed by, affiliated with, or supported by Salesforce, Inc.
 
-A Salesforce CLI plugin for managing Data Cloud (Data 360) resources via the Connect API. 159 commands across 23 topics covering the full Data Cloud lifecycle: Connect, Prepare, Harmonize, Segment, Act, and Retrieve.
+A Salesforce CLI plugin for managing Data Cloud (Data 360) resources via the Connect API. 163 commands across 25 topics covering the full Data Cloud lifecycle: Connect, Prepare, Harmonize, Segment, Act, Retrieve, and project file workflows.
 
 ## Quick Start
 
@@ -26,6 +26,37 @@ sf data360 dmo list --all -o myorg
 sf data360 query sql -o myorg --sql 'SELECT COUNT(*) FROM "ssot__Individual__dlm"'
 ```
 
+## Project File Retrieve and Deploy
+
+Data 360 resources are not Salesforce Metadata API components, so this plugin intercepts Data 360-scoped `sf project retrieve start` and `sf project deploy start` invocations before the core Metadata API command runs. Ordinary Metadata API retrieves and deploys continue to use the stock Salesforce CLI behavior.
+
+```bash
+# Retrieve Data 360 metadata into force-app/main/default/data360/<type>/<name>.json.
+sf project retrieve start -o myorg --metadata Data360DataGraph:IndividualGraph
+sf project retrieve start -o myorg --metadata dmo --all --output-dir force-app/main/default
+
+# The same Data 360-native workflow is available under the data360 namespace.
+sf data360 project retrieve start -o myorg --metadata Data360DataGraph:IndividualGraph
+sf data360 project retrieve start -o myorg --metadata dmo --all --output-dir force-app/main/default
+
+# Deploy retrieved JSON payloads back through the Data 360 Connect API.
+sf project deploy start -o myorg --source-dir force-app/main/default/data360
+sf project deploy start -o myorg --metadata Data360DataGraph:IndividualGraph --dry-run
+
+# Namespace equivalents.
+sf data360 project deploy start -o myorg --source-dir force-app/main/default/data360
+sf data360 project deploy start -o myorg --metadata Data360DataGraph:IndividualGraph --dry-run
+```
+
+The file layout is:
+
+```text
+force-app/main/default/data360/
+  data-graphs/IndividualGraph.json
+  data-model-objects/UnifiedIndividual__dlm.json
+  segments/HighValue.json
+```
+
 ## Man Pages
 
 ```bash
@@ -37,7 +68,7 @@ sf data360 man segment publish
 sf data360 man
 ```
 
-## Command Topics (160 commands)
+## Command Topics (163 commands)
 
 | Topic                 | Commands | Description                                 |
 | --------------------- | -------- | ------------------------------------------- |
@@ -56,12 +87,13 @@ sf data360 man
 | `activation-target`   | 4        | Activation targets                          |
 | `data-action`         | 2        | Data actions                                |
 | `data-action-target`  | 5        | Data action targets                         |
-| `query`               | 10       | SQL, vector search, async queries           |
+| `query`               | 11       | SQL, vector search, async queries           |
 | `search-index`        | 6        | Semantic search indexes                     |
 | `data-space`          | 7        | Data spaces                                 |
 | `data-kit`            | 3        | Data kits (bundles)                         |
 | `insight`             | 3        | Insights                                    |
 | `metadata`            | 3        | Metadata introspection                      |
+| `project`             | 2        | Retrieve and deploy project files           |
 | `universal-id`        | 1        | Universal ID lookup                         |
 | `doctor`              | 1        | Health check                                |
 

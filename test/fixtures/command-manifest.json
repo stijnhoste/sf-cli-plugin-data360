@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "commandCount": 161,
+  "commandCount": 163,
   "commands": [
     {
       "name": "data360 activation-target create",
@@ -1472,6 +1472,30 @@
       "endpoint": "/profile/:dataModelName",
       "httpMethod": "",
       "flags": ["api-version", "name", "raw", "target-org", "timing"],
+      "arrayKey": "",
+      "batchSize": null,
+      "hasNameResolution": false
+    },
+    {
+      "name": "data360 project deploy start",
+      "file": "src/commands/data360/project/deploy/start.ts",
+      "summary": "Deploy Data 360 metadata from project source files.",
+      "baseClass": "Data360Command",
+      "endpoint": "",
+      "httpMethod": "",
+      "flags": ["api-version", "dry-run", "metadata", "operation", "raw", "source-dir", "target-org", "timing"],
+      "arrayKey": "",
+      "batchSize": null,
+      "hasNameResolution": false
+    },
+    {
+      "name": "data360 project retrieve start",
+      "file": "src/commands/data360/project/retrieve/start.ts",
+      "summary": "Retrieve Data 360 metadata into project source files.",
+      "baseClass": "Data360Command",
+      "endpoint": "",
+      "httpMethod": "",
+      "flags": ["all", "api-version", "metadata", "output-dir", "raw", "target-org", "timing"],
       "arrayKey": "",
       "batchSize": null,
       "hasNameResolution": false
