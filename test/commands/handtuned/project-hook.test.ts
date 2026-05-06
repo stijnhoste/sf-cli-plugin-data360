@@ -56,6 +56,7 @@ describe('project Data 360 hook', () => {
     const body = JSON.parse(await readFile(filePath, 'utf8')) as Record<string, unknown>;
 
     assert.equal(result.handled, true);
+    if (result.handled) assert.equal(result.exitCode, 0);
     assert.equal(body.label, 'Individual Graph');
     assert.equal(requestLog.length, 1);
     assert.equal(requestLog[0].method, 'GET');
@@ -75,6 +76,7 @@ describe('project Data 360 hook', () => {
     );
 
     assert.equal(result.handled, true);
+    if (result.handled) assert.equal(result.exitCode, 0);
     assert.equal(requestLog.length, 0);
     if (result.handled) {
       assert.deepEqual(result.result, {

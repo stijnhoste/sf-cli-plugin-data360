@@ -33,6 +33,7 @@ type HookResult =
     }
   | {
       handled: true;
+      exitCode: number;
       result: unknown;
     };
 
@@ -154,12 +155,21 @@ const shouldHandleDeploy = (commandId: string, flags: ParsedProjectFlags): boole
   (flags.metadata.some(isData360MetadataEntry) ||
     flags.sourceDirs.some((sourceDir) => data360SourcePattern.test(sourceDir)));
 
-const printResult = (result: unknown, json: boolean): void => {
+const printResult = (result: unknown, json: boolean, status = 0): void => {
   if (json) {
-    process.stdout.write(`${JSON.stringify({ status: 0, result }, null, 2)}\n`);
+    process.stdout.write(`${JSON.stringify({ status, result }, null, 2)}\n`);
     return;
   }
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+};
+
+const printError = (error: unknown, json: boolean): void => {
+  const message = error instanceof Error ? error.message : String(error);
+  if (json) {
+    process.stdout.write(`${JSON.stringify({ status: 1, name: 'Data360ProjectError', message }, null, 2)}\n`);
+    return;
+  }
+  process.stderr.write(`${message}\n`);
 };
 
 const requireTargetOrg = (flags: ParsedProjectFlags): string => {
@@ -224,19 +234,24 @@ export const runProjectData360Hook = async (
     return { handled: false };
   }
 
-  const org = await orgFactory(requireTargetOrg(flags));
-  const result = shouldHandleRetrieve(normalizedCommandId, flags)
-    ? await runRetrieve(org, flags)
-    : await runDeploy(org, flags);
+  try {
+    const org = await orgFactory(requireTargetOrg(flags));
+    const result = shouldHandleRetrieve(normalizedCommandId, flags)
+      ? await runRetrieve(org, flags)
+      : await runDeploy(org, flags);
 
-  printResult(result, flags.json);
-  return { handled: true, result };
+    printResult(result, flags.json);
+    return { handled: true, exitCode: 0, result };
+  } catch (error) {
+    printError(error, flags.json);
+    return { handled: true, exitCode: 1, result: error };
+  }
 };
 
 const hook: Hook.Prerun = async function ({ Command, argv }) {
   const result = await runProjectData360Hook(Command.id, argv);
   if (result.handled) {
-    process.exit(0);
+    process.exit(result.exitCode);
   }
 };
 
