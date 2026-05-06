@@ -127,6 +127,35 @@ describe('data360 project metadata', () => {
     assert.ok(requestLog[0].url.endsWith('/ssot/data-graphs/IndividualGraph'));
   });
 
+  it('uses per-type update methods for Data 360 project deploys', async () => {
+    const sourceDir = join(tempDir, 'data360', 'data-transforms');
+    await mkdir(sourceDir, { recursive: true });
+    await writeFile(
+      join(sourceDir, 'Normalize.json'),
+      JSON.stringify({ name: 'Normalize', label: 'Normalize', definition: { steps: [] }, actionUrls: {} }, null, 2),
+      'utf8'
+    );
+
+    const { result, requestLog } = await runCommand(Data360ProjectDeployStart, {
+      flags: {
+        'target-org': {},
+        'api-version': '66.0',
+        timing: false,
+        raw: false,
+        'source-dir': [join(tempDir, 'data360')],
+        operation: 'update',
+        'dry-run': false,
+      },
+      responses: new Map([['/data-transforms/Normalize', { success: true }]]),
+    });
+
+    assert.equal(result.files.length, 1);
+    assert.equal(requestLog.length, 1);
+    assert.equal(requestLog[0].method, 'PUT');
+    assert.ok(requestLog[0].url.endsWith('/ssot/data-transforms/Normalize'));
+    assert.deepEqual(requestLog[0].body, { name: 'Normalize', label: 'Normalize', definition: { steps: [] } });
+  });
+
   it('dry-runs Data 360 deploy without mutating the org', async () => {
     const sourceDir = join(tempDir, 'data360', 'segments');
     await mkdir(sourceDir, { recursive: true });

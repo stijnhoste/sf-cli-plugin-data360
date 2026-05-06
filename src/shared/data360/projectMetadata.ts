@@ -4,7 +4,7 @@ import { SfError, SfProject } from '@salesforce/core';
 import { Org } from '@salesforce/core';
 import { buildPath, injectResourceId } from './pathBuilder.js';
 import { fetchAllPages, fetchPage } from './pagination.js';
-import { ssotGet, ssotPatch, ssotPost } from './ssotClient.js';
+import { ssotGet, ssotPatch, ssotPost, ssotPut } from './ssotClient.js';
 
 export type Data360MetadataType = {
   type: string;
@@ -17,7 +17,7 @@ export type Data360MetadataType = {
   updateEndpoint: string;
   arrayKey?: string;
   nameFields: string[];
-  updateMethod?: 'PATCH';
+  updateMethod?: 'PATCH' | 'PUT';
 };
 
 export type Data360ComponentRef = {
@@ -59,6 +59,7 @@ export const data360MetadataTypes: Data360MetadataType[] = [
     detailEndpoint: '/activations/:name',
     createEndpoint: '/activations',
     updateEndpoint: '/activations/:name',
+    updateMethod: 'PUT',
     arrayKey: 'activations',
     nameFields: ['id', 'activationId', 'name', 'apiName', 'developerName'],
   },
@@ -189,6 +190,7 @@ export const data360MetadataTypes: Data360MetadataType[] = [
     detailEndpoint: '/data-transforms/:name',
     createEndpoint: '/data-transforms',
     updateEndpoint: '/data-transforms/:name',
+    updateMethod: 'PUT',
     nameFields: ['name', 'developerName', 'apiName', 'id'],
   },
   {
@@ -373,6 +375,16 @@ export const readProjectFiles = async (
   return output.filter((file): file is Data360ProjectFile => file !== undefined);
 };
 
+const pickFields = (body: Record<string, unknown>, fields: string[]): Record<string, unknown> =>
+  Object.fromEntries(fields.filter((field) => body[field] !== undefined).map((field) => [field, body[field]]));
+
+const getDeployBody = (file: Data360ProjectFile): Record<string, unknown> => {
+  if (file.type.type === 'Data360DataTransform') {
+    return pickFields(file.body, ['name', 'label', 'description', 'type', 'definition']);
+  }
+  return file.body;
+};
+
 const getRecordsFromListResponse = (response: unknown, arrayKey?: string): Array<Record<string, unknown>> => {
   if (Array.isArray(response)) return response.filter(isRecord);
   if (!isRecord(response)) return [];
@@ -436,17 +448,18 @@ export const deployComponent = async (
   operation: 'create' | 'update' | 'upsert'
 ): Promise<'create' | 'update'> => {
   if (operation === 'create') {
-    await ssotPost<Record<string, unknown>>(org, apiVersion, file.type.createEndpoint, file.body);
+    await ssotPost<Record<string, unknown>>(org, apiVersion, file.type.createEndpoint, getDeployBody(file));
     return 'create';
   }
 
   const update = async (): Promise<void> => {
-    await ssotPatch<Record<string, unknown>>(
-      org,
-      apiVersion,
-      injectResourceId(file.type.updateEndpoint, file.name),
-      file.body
-    );
+    const path = injectResourceId(file.type.updateEndpoint, file.name);
+    const body = getDeployBody(file);
+    if (file.type.updateMethod === 'PUT') {
+      await ssotPut<Record<string, unknown>>(org, apiVersion, path, body);
+      return;
+    }
+    await ssotPatch<Record<string, unknown>>(org, apiVersion, path, body);
   };
 
   if (operation === 'update') {
@@ -460,7 +473,7 @@ export const deployComponent = async (
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (!message.includes('404') && !message.toLowerCase().includes('not found')) throw error;
-    await ssotPost<Record<string, unknown>>(org, apiVersion, file.type.createEndpoint, file.body);
+    await ssotPost<Record<string, unknown>>(org, apiVersion, file.type.createEndpoint, getDeployBody(file));
     return 'create';
   }
 };

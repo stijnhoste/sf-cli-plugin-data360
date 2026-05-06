@@ -60,14 +60,16 @@ export default class Data360ProjectDeployStart extends Data360Command<Data360Pro
     const filters = flags.metadata?.length ? parseMetadataEntries(flags.metadata) : undefined;
     const sourceDirs = flags['source-dir']?.length ? flags['source-dir'] : [`${await resolveOutputRoot()}/data360`];
     const files = await readProjectFiles(sourceDirs, filters);
-    const results = await Promise.all(
-      files.map(async (file): Promise<DeployWriteResult> => {
-        const operation = flags['dry-run']
-          ? 'dry-run'
-          : await deployComponent(this.org, this.apiVersion, file, flags.operation);
-        return { type: file.type.type, name: file.name, filePath: file.path, operation };
-      })
-    );
+    const results: DeployWriteResult[] = [];
+    for (const file of files) {
+      // Deploy sequentially so a rejected component does not trigger unrelated concurrent writes.
+      let operation: DeployWriteResult['operation'] = 'dry-run';
+      if (!flags['dry-run']) {
+        // eslint-disable-next-line no-await-in-loop
+        operation = await deployComponent(this.org, this.apiVersion, file, flags.operation);
+      }
+      results.push({ type: file.type.type, name: file.name, filePath: file.path, operation });
+    }
 
     this.emitTiming(performance.now() - tApi);
 
