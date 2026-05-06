@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import Data360ProjectRetrieveStart from '../../../src/commands/data360/project/retrieve/start.js';
 import Data360ProjectDeployStart from '../../../src/commands/data360/project/deploy/start.js';
+import { data360MetadataTypes, Data360MetadataType } from '../../../src/shared/data360/projectMetadata.js';
 import { runCommand } from '../../helpers/runCommand.js';
 
 describe('data360 project metadata', () => {
@@ -99,11 +100,11 @@ describe('data360 project metadata', () => {
   });
 
   it('deploys Data 360 project files with update semantics', async () => {
-    const sourceDir = join(tempDir, 'data360', 'data-graphs');
+    const sourceDir = join(tempDir, 'data360', 'activation-targets');
     await mkdir(sourceDir, { recursive: true });
     await writeFile(
-      join(sourceDir, 'IndividualGraph.json'),
-      JSON.stringify({ name: 'IndividualGraph', label: 'Individual Graph' }, null, 2),
+      join(sourceDir, 'EmailTarget.json'),
+      JSON.stringify({ id: 'EmailTarget', label: 'Email Target' }, null, 2),
       'utf8'
     );
 
@@ -117,14 +118,14 @@ describe('data360 project metadata', () => {
         operation: 'update',
         'dry-run': false,
       },
-      responses: new Map([['/data-graphs/IndividualGraph', { success: true }]]),
+      responses: new Map([['/activation-targets/EmailTarget', { success: true }]]),
     });
 
     assert.equal(result.files.length, 1);
     assert.equal(result.files[0].operation, 'update');
     assert.equal(requestLog.length, 1);
     assert.equal(requestLog[0].method, 'PATCH');
-    assert.ok(requestLog[0].url.endsWith('/ssot/data-graphs/IndividualGraph'));
+    assert.ok(requestLog[0].url.endsWith('/ssot/activation-targets/EmailTarget'));
   });
 
   it('uses per-type update methods for Data 360 project deploys', async () => {
@@ -156,6 +157,87 @@ describe('data360 project metadata', () => {
     assert.deepEqual(requestLog[0].body, { name: 'Normalize', label: 'Normalize', definition: { steps: [] } });
   });
 
+  it('declares retrieve and deploy behavior for every Data 360 project metadata type', async () => {
+    const expectedTypes = new Set([
+      'Data360Activation',
+      'Data360ActivationTarget',
+      'Data360CalculatedInsight',
+      'Data360Connection',
+      'Data360DataAction',
+      'Data360DataActionTarget',
+      'Data360DataGraph',
+      'Data360DataLakeObject',
+      'Data360DataModelObject',
+      'Data360DataModelObjectMapping',
+      'Data360DataSpace',
+      'Data360DataStream',
+      'Data360DataTransform',
+      'Data360DocumentProcessingConfiguration',
+      'Data360IdentityResolution',
+      'Data360SearchIndex',
+      'Data360Segment',
+    ]);
+
+    assert.deepEqual(new Set(data360MetadataTypes.map((type) => type.type)), expectedTypes);
+
+    for (const metadataType of data360MetadataTypes) {
+      const componentName = componentNameFor(metadataType);
+      const sourceRoot = join(tempDir, 'coverage', metadataType.directoryName);
+      const sourceDir = join(sourceRoot, 'data360', metadataType.directoryName);
+      await mkdir(sourceDir, { recursive: true });
+      await writeFile(
+        join(sourceDir, `${componentName}.json`),
+        JSON.stringify(componentBodyFor(metadataType, componentName), null, 2),
+        'utf8'
+      );
+
+      const { result, requestLog } = await runCommand(Data360ProjectDeployStart, {
+        flags: {
+          'target-org': {},
+          'api-version': '66.0',
+          timing: false,
+          raw: false,
+          'source-dir': [join(sourceRoot, 'data360')],
+          operation: 'update',
+          'dry-run': false,
+        },
+        responses: new Map([[metadataType.updateEndpoint.replace(/:[^/]+/, componentName), { success: true }]]),
+      });
+
+      const deployed = result.files.find((file) => file.type === metadataType.type && file.name === componentName);
+      assert.ok(deployed, `${metadataType.type} should produce a deploy result`);
+
+      if (metadataType.deployUnsupportedReason !== undefined || shouldSkipFixture(metadataType)) {
+        assert.equal(deployed.operation, 'skipped', `${metadataType.type} should be skipped with a reason`);
+        assert.ok(deployed.skippedReason, `${metadataType.type} should include a skipped reason`);
+        continue;
+      }
+
+      assert.equal(deployed.operation, 'update', `${metadataType.type} should update`);
+      const request = requestLog.find((entry) => entry.url.includes(metadataType.updateEndpoint.split('/:')[0]));
+      assert.ok(request, `${metadataType.type} should send an update request`);
+      assert.equal(
+        request.method,
+        metadataType.updateMethod ?? 'PATCH',
+        `${metadataType.type} should use its update method`
+      );
+
+      if (metadataType.type === 'Data360DataSpace') {
+        assert.deepEqual(request.body, { label: 'Sample Label', description: 'Sample Description' });
+      }
+      if (metadataType.type === 'Data360DataModelObject' || metadataType.type === 'Data360DataStream') {
+        assert.deepEqual(request.body, {});
+      }
+      if (metadataType.type === 'Data360IdentityResolution') {
+        assert.deepEqual(request.body, {
+          label: 'Identity Ruleset',
+          matchRules: [{ label: 'Exact Email', criteria: [] }],
+          reconciliationRules: [{ entityName: 'ssot__Individual__dlm', fields: [], ruleType: 'mostfrequent' }],
+        });
+      }
+    }
+  });
+
   it('dry-runs Data 360 deploy without mutating the org', async () => {
     const sourceDir = join(tempDir, 'data360', 'segments');
     await mkdir(sourceDir, { recursive: true });
@@ -178,3 +260,54 @@ describe('data360 project metadata', () => {
     assert.equal(requestLog.length, 0);
   });
 });
+
+const componentNameFor = (metadataType: Data360MetadataType): string => {
+  if (metadataType.type === 'Data360DataModelObject') return 'Sample__dlm';
+  if (metadataType.type === 'Data360DataLakeObject') return 'Sample__dll';
+  if (metadataType.type === 'Data360DataStream') return 'Sample_Stream';
+  if (metadataType.type === 'Data360IdentityResolution') return '1ir000000000001AAA';
+  return 'Sample';
+};
+
+const componentBodyFor = (metadataType: Data360MetadataType, componentName: string): Record<string, unknown> => {
+  if (metadataType.type === 'Data360DataSpace') {
+    return { name: componentName, id: '0ds000000000001AAA', label: 'Sample Label', description: 'Sample Description' };
+  }
+  if (metadataType.type === 'Data360DataModelObject') {
+    return { name: componentName, label: 'Sample DMO', creationType: 'SYSTEM', fields: [] };
+  }
+  if (metadataType.type === 'Data360DataStream') {
+    return { name: componentName, label: 'Sample Stream', connectorInfo: {}, dataLakeObjectInfo: {} };
+  }
+  if (metadataType.type === 'Data360DataTransform') {
+    return { name: componentName, label: 'Sample Transform', creationType: 'USER', definition: { steps: [] } };
+  }
+  if (metadataType.type === 'Data360IdentityResolution') {
+    return {
+      id: componentName,
+      label: 'Identity Ruleset',
+      matchRules: [{ label: 'Exact Email', criteria: [] }],
+      reconciliationRules: [
+        {
+          entityName: 'ssot__Individual__dlm',
+          fields: [],
+          linkDmoName: 'IndividualIdentityLink__dlm',
+          ruleType: 'mostfrequent',
+          unifiedDmoName: 'UnifiedIndividual__dlm',
+        },
+      ],
+    };
+  }
+  if (metadataType.type === 'Data360Segment') {
+    return { segmentApiName: componentName, displayName: 'Sample Segment', segmentType: 'UI' };
+  }
+  return {
+    id: componentName,
+    name: componentName,
+    apiName: componentName,
+    developerName: componentName,
+    label: 'Sample Label',
+  };
+};
+
+const shouldSkipFixture = (metadataType: Data360MetadataType): boolean => metadataType.type === 'Data360Segment';

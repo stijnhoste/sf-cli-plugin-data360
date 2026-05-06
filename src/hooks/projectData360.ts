@@ -212,12 +212,25 @@ const runDeploy = async (
   const filters = flags.metadata.length ? parseMetadataEntries(flags.metadata) : undefined;
   const sourceDirs = flags.sourceDirs.length ? flags.sourceDirs : [`${await resolveOutputRoot()}/data360`];
   const files = await readProjectFiles(sourceDirs, filters);
-  const results = await Promise.all(
-    files.map(async (file): Promise<DeployWriteResult> => {
-      const operation = flags.dryRun ? 'dry-run' : await deployComponent(org, flags.apiVersion, file, flags.operation);
-      return { type: file.type.type, name: file.name, filePath: file.path, operation };
-    })
-  );
+  const results: DeployWriteResult[] = [];
+  for (const file of files) {
+    let operation: DeployWriteResult['operation'] = 'dry-run';
+    let skippedReason: string | undefined;
+    if (!flags.dryRun) {
+      // Deploy sequentially so a rejected component does not trigger unrelated concurrent writes.
+      // eslint-disable-next-line no-await-in-loop
+      const result = await deployComponent(org, flags.apiVersion, file, flags.operation);
+      operation = result.operation;
+      skippedReason = result.skippedReason;
+    }
+    results.push({
+      type: file.type.type,
+      name: file.name,
+      filePath: file.path,
+      operation,
+      ...(skippedReason ? { skippedReason } : {}),
+    });
+  }
 
   return { sourceDirs, dryRun: flags.dryRun, files: results };
 };

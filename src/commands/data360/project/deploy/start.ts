@@ -64,11 +64,20 @@ export default class Data360ProjectDeployStart extends Data360Command<Data360Pro
     for (const file of files) {
       // Deploy sequentially so a rejected component does not trigger unrelated concurrent writes.
       let operation: DeployWriteResult['operation'] = 'dry-run';
+      let skippedReason: string | undefined;
       if (!flags['dry-run']) {
         // eslint-disable-next-line no-await-in-loop
-        operation = await deployComponent(this.org, this.apiVersion, file, flags.operation);
+        const result = await deployComponent(this.org, this.apiVersion, file, flags.operation);
+        operation = result.operation;
+        skippedReason = result.skippedReason;
       }
-      results.push({ type: file.type.type, name: file.name, filePath: file.path, operation });
+      results.push({
+        type: file.type.type,
+        name: file.name,
+        filePath: file.path,
+        operation,
+        ...(skippedReason ? { skippedReason } : {}),
+      });
     }
 
     this.emitTiming(performance.now() - tApi);
@@ -82,6 +91,7 @@ export default class Data360ProjectDeployStart extends Data360Command<Data360Pro
           { key: 'operation', name: 'Operation' },
           { key: 'type', name: 'Type' },
           { key: 'name', name: 'Name' },
+          { key: 'skippedReason', name: 'Skipped Reason' },
           { key: 'filePath', name: 'File' },
         ],
       });

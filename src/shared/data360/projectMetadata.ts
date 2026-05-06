@@ -18,6 +18,7 @@ export type Data360MetadataType = {
   arrayKey?: string;
   nameFields: string[];
   updateMethod?: 'PATCH' | 'PUT';
+  deployUnsupportedReason?: string;
 };
 
 export type Data360ComponentRef = {
@@ -42,8 +43,11 @@ export type DeployWriteResult = {
   type: string;
   name: string;
   filePath: string;
-  operation: 'create' | 'update' | 'dry-run';
+  operation: 'create' | 'update' | 'dry-run' | 'skipped';
+  skippedReason?: string;
 };
+
+export type DeployComponentResult = Pick<DeployWriteResult, 'operation' | 'skippedReason'>;
 
 const DATA360_DIR = 'data360';
 const DEFAULT_BATCH_SIZE = 200;
@@ -95,6 +99,8 @@ export const data360MetadataTypes: Data360MetadataType[] = [
     updateEndpoint: '/connections/:name',
     arrayKey: 'connections',
     nameFields: ['id', 'name', 'developerName', 'label'],
+    deployUnsupportedReason:
+      'Connection updates require a connector-specific polymorphic request body that is not present in retrieved connection metadata.',
   },
   {
     type: 'Data360DataAction',
@@ -105,6 +111,8 @@ export const data360MetadataTypes: Data360MetadataType[] = [
     createEndpoint: '/data-actions',
     updateEndpoint: '/data-actions/:name',
     nameFields: ['apiName', 'developerName', 'name', 'id'],
+    deployUnsupportedReason:
+      'Data action update APIs reject retrieved Flow-backed action metadata; deploy requires an authoring-specific payload.',
   },
   {
     type: 'Data360DataActionTarget',
@@ -115,6 +123,8 @@ export const data360MetadataTypes: Data360MetadataType[] = [
     createEndpoint: '/data-action-targets',
     updateEndpoint: '/data-action-targets/:name',
     nameFields: ['apiName', 'developerName', 'name', 'id'],
+    deployUnsupportedReason:
+      'Data action target update APIs reject retrieved Core/Flow-backed target metadata; deploy requires an authoring-specific payload.',
   },
   {
     type: 'Data360DataGraph',
@@ -125,6 +135,8 @@ export const data360MetadataTypes: Data360MetadataType[] = [
     createEndpoint: '/data-graphs',
     updateEndpoint: '/data-graphs/:name',
     nameFields: ['name', 'apiName', 'developerName', 'id'],
+    deployUnsupportedReason:
+      'Data graph detail responses contain generated runtime metadata; the update API requires an authoring payload with participating DMOs.',
   },
   {
     type: 'Data360DataLakeObject',
@@ -135,6 +147,8 @@ export const data360MetadataTypes: Data360MetadataType[] = [
     createEndpoint: '/data-lake-objects',
     updateEndpoint: '/data-lake-objects/:name',
     nameFields: ['developerName', 'name', 'apiName', 'id'],
+    deployUnsupportedReason:
+      'Data lake objects associated with data streams must be managed through data stream APIs, not direct DLO metadata replay.',
   },
   {
     type: 'Data360DataModelObject',
@@ -161,6 +175,7 @@ export const data360MetadataTypes: Data360MetadataType[] = [
     updateEndpoint: '/data-model-object-mappings/:name',
     arrayKey: 'objectSourceTargetMaps',
     nameFields: ['developerName', 'objectSourceTargetMapDeveloperName', 'name', 'id'],
+    deployUnsupportedReason: 'Existing DMO mappings expose GET/DELETE APIs but no update method for metadata replay.',
   },
   {
     type: 'Data360DataSpace',
@@ -378,11 +393,63 @@ export const readProjectFiles = async (
 const pickFields = (body: Record<string, unknown>, fields: string[]): Record<string, unknown> =>
   Object.fromEntries(fields.filter((field) => body[field] !== undefined).map((field) => [field, body[field]]));
 
-const getDeployBody = (file: Data360ProjectFile): Record<string, unknown> => {
-  if (file.type.type === 'Data360DataTransform') {
-    return pickFields(file.body, ['name', 'label', 'description', 'type', 'definition']);
+const unwrapSingletonResponse = (type: Data360MetadataType, body: Record<string, unknown>): Record<string, unknown> => {
+  const arrays = [type.arrayKey ? getPath(body, type.arrayKey) : undefined, body.dataLakeObjects, body.segments].filter(
+    Array.isArray
+  ) as unknown[][];
+  const first = arrays.find((array) => array.length === 1)?.[0];
+  return isRecord(first) ? first : body;
+};
+
+const cleanIdentityResolutionRules = (body: Record<string, unknown>): Record<string, unknown> => {
+  const output = pickFields(body, ['label', 'matchRules', 'reconciliationRules']);
+  if (Array.isArray(output.reconciliationRules)) {
+    output.reconciliationRules = output.reconciliationRules.map((rule) => {
+      if (!isRecord(rule)) return {};
+      const { linkDmoName, unifiedDmoName, ...cleaned } = rule;
+      void linkDmoName;
+      void unifiedDmoName;
+      return cleaned;
+    });
   }
-  return file.body;
+  return output;
+};
+
+const getDeploySkipReason = (file: Data360ProjectFile): string | undefined => {
+  if (file.type.deployUnsupportedReason) return file.type.deployUnsupportedReason;
+
+  const body = unwrapSingletonResponse(file.type, file.body);
+  if (file.type.type === 'Data360DataTransform') {
+    const definition = isRecord(body.definition) ? body.definition : {};
+    const definitionType = firstString(definition, ['sqlType', 'type']);
+    if (body.creationType === 'SYSTEM' || definitionType?.endsWith('_HIDDEN')) {
+      return 'System or hidden Data Transform definitions are generated by Data Cloud and cannot be replayed through project deploy.';
+    }
+  }
+
+  if (file.type.type === 'Data360Segment' && body.segmentType === 'UI') {
+    return 'UI segments cannot be replayed through the segment update API, which requires DBT or Lookalike authoring payloads.';
+  }
+
+  return undefined;
+};
+
+const getDeployBody = (file: Data360ProjectFile): Record<string, unknown> => {
+  const body = unwrapSingletonResponse(file.type, file.body);
+
+  if (file.type.type === 'Data360DataModelObject' || file.type.type === 'Data360DataStream') {
+    return {};
+  }
+  if (file.type.type === 'Data360DataSpace') {
+    return pickFields(body, ['label', 'description']);
+  }
+  if (file.type.type === 'Data360DataTransform') {
+    return pickFields(body, ['name', 'label', 'description', 'type', 'definition']);
+  }
+  if (file.type.type === 'Data360IdentityResolution') {
+    return cleanIdentityResolutionRules(body);
+  }
+  return body;
 };
 
 const getRecordsFromListResponse = (response: unknown, arrayKey?: string): Array<Record<string, unknown>> => {
@@ -446,10 +513,13 @@ export const deployComponent = async (
   apiVersion: string,
   file: Data360ProjectFile,
   operation: 'create' | 'update' | 'upsert'
-): Promise<'create' | 'update'> => {
+): Promise<DeployComponentResult> => {
+  const skippedReason = getDeploySkipReason(file);
+  if (skippedReason) return { operation: 'skipped', skippedReason };
+
   if (operation === 'create') {
     await ssotPost<Record<string, unknown>>(org, apiVersion, file.type.createEndpoint, getDeployBody(file));
-    return 'create';
+    return { operation: 'create' };
   }
 
   const update = async (): Promise<void> => {
@@ -464,17 +534,17 @@ export const deployComponent = async (
 
   if (operation === 'update') {
     await update();
-    return 'update';
+    return { operation: 'update' };
   }
 
   try {
     await update();
-    return 'update';
+    return { operation: 'update' };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (!message.includes('404') && !message.toLowerCase().includes('not found')) throw error;
     await ssotPost<Record<string, unknown>>(org, apiVersion, file.type.createEndpoint, getDeployBody(file));
-    return 'create';
+    return { operation: 'create' };
   }
 };
 
