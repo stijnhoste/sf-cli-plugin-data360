@@ -157,6 +157,49 @@ describe('data360 project metadata', () => {
     assert.deepEqual(requestLog[0].body, { name: 'Normalize', label: 'Normalize', definition: { steps: [] } });
   });
 
+  it('retrieves every Data 360 project metadata type through list and detail endpoints', async () => {
+    for (const metadataType of data360MetadataTypes) {
+      const componentName = componentNameFor(metadataType);
+      const outputRoot = join(tempDir, 'retrieve-coverage', metadataType.directoryName);
+      const responses = new Map<string, unknown>([
+        [metadataType.listEndpoint, { data: [{ [metadataType.nameFields[0]]: componentName }] }],
+        [metadataType.detailEndpoint.replace(/:[^/]+/, componentName), componentBodyFor(metadataType, componentName)],
+      ]);
+
+      if (metadataType.listQuery) {
+        const query = Object.entries(metadataType.listQuery)
+          .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(String(value))}`)
+          .join('&');
+        responses.set(`${metadataType.listEndpoint}?${query}`, {
+          data: [{ [metadataType.nameFields[0]]: componentName }],
+        });
+      }
+
+      const { result, requestLog } = await runCommand(Data360ProjectRetrieveStart, {
+        flags: {
+          'target-org': {},
+          'api-version': '66.0',
+          timing: false,
+          raw: false,
+          metadata: [metadataType.type],
+          'output-dir': outputRoot,
+          all: false,
+        },
+        responses,
+      });
+
+      const filePath = join(outputRoot, 'data360', metadataType.directoryName, `${componentName}.json`);
+      const body = JSON.parse(await readFile(filePath, 'utf8')) as Record<string, unknown>;
+
+      assert.equal(result.files.length, 1, `${metadataType.type} should retrieve one fixture record`);
+      assert.equal(result.files[0].filePath, filePath);
+      assert.deepEqual(body, componentBodyFor(metadataType, componentName));
+      assert.equal(requestLog.length, 2, `${metadataType.type} should call list and detail`);
+      assert.equal(requestLog[0].method, 'GET');
+      assert.equal(requestLog[1].method, 'GET');
+    }
+  });
+
   it('declares retrieve and deploy behavior for every Data 360 project metadata type', async () => {
     const expectedTypes = new Set([
       'Data360Activation',
