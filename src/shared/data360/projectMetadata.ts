@@ -19,6 +19,10 @@ export type Data360MetadataType = {
   nameFields: string[];
   updateMethod?: 'PATCH' | 'PUT';
   deployUnsupportedReason?: string;
+  /** Custom list strategy when the generic list endpoint can't be bulk-queried. */
+  customList?: 'dmoMappings';
+  /** When true, list responses already contain full detail and retrieve can skip the per-record GET. */
+  listReturnsDetail?: boolean;
 };
 
 export type Data360ComponentRef = {
@@ -175,6 +179,8 @@ export const data360MetadataTypes: Data360MetadataType[] = [
     updateEndpoint: '/data-model-object-mappings/:name',
     arrayKey: 'objectSourceTargetMaps',
     nameFields: ['developerName', 'objectSourceTargetMapDeveloperName', 'name', 'id'],
+    customList: 'dmoMappings',
+    listReturnsDetail: true,
     deployUnsupportedReason: 'Existing DMO mappings expose GET/DELETE APIs but no update method for metadata replay.',
   },
   {
@@ -476,12 +482,77 @@ export const retrieveComponent = async (
   return isRecord(response) ? response : {};
 };
 
+const DMO_MAPPING_LIST_CONCURRENCY = 20;
+
+const mapWithConcurrency = async <I, O>(
+  items: I[],
+  concurrency: number,
+  worker: (item: I) => Promise<O>
+): Promise<O[]> => {
+  const results: O[] = new Array(items.length) as O[];
+  let next = 0;
+  const runners = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    for (let index = next++; index < items.length; index = next++) {
+      // eslint-disable-next-line no-await-in-loop
+      results[index] = await worker(items[index]);
+    }
+  });
+  await Promise.all(runners);
+  return results;
+};
+
+const listDmoMappings = async (org: Org, apiVersion: string): Promise<Array<Record<string, unknown>>> => {
+  const dmoType = typeByAlias.get('data360datamodelobject');
+  if (!dmoType) throw new SfError('Data360DataModelObject metadata type missing.', 'DATA360_METADATA_TYPE_UNSUPPORTED');
+
+  const dmos = await listComponents(org, apiVersion, dmoType, true);
+  const dmoNames = dmos
+    .map((dmo) => firstString(dmo, dmoType.nameFields))
+    .filter((name): name is string => Boolean(name));
+
+  const seen = new Set<string>();
+  const mappings: Array<Record<string, unknown>> = [];
+
+  const perDmo = await mapWithConcurrency(
+    dmoNames,
+    DMO_MAPPING_LIST_CONCURRENCY,
+    async (dmoName): Promise<Array<Record<string, unknown>>> => {
+      try {
+        const response = await ssotGet<Record<string, unknown>>(
+          org,
+          apiVersion,
+          buildPath('/data-model-object-mappings', undefined, { dmoDeveloperName: dmoName })
+        );
+        return getRecordsFromListResponse(response, 'objectSourceTargetMaps');
+      } catch {
+        // DMOs without mappings or without ingestion source may 404 / error — skip them.
+        return [];
+      }
+    }
+  );
+
+  for (const batch of perDmo) {
+    for (const record of batch) {
+      const name = firstString(record, ['developerName', 'objectSourceTargetMapDeveloperName', 'name', 'id']);
+      if (name && !seen.has(name)) {
+        seen.add(name);
+        mappings.push(record);
+      }
+    }
+  }
+
+  return mappings;
+};
+
 export const listComponents = async (
   org: Org,
   apiVersion: string,
   type: Data360MetadataType,
   fetchAll: boolean
 ): Promise<Array<Record<string, unknown>>> => {
+  if (type.customList === 'dmoMappings') {
+    return listDmoMappings(org, apiVersion);
+  }
   if (fetchAll) {
     return fetchAllPages<Record<string, unknown>>(
       org,

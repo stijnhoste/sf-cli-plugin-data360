@@ -62,7 +62,8 @@ export default class Data360ProjectRetrieveStart extends Data360Command<Data360P
           return Promise.all(
             records.map(async (record): Promise<RetrieveWriteResult> => {
               const name = getComponentName(ref.type, record, ref.name);
-              const detail = ref.name ? record : await retrieveComponent(this.org, this.apiVersion, ref.type, name);
+              const skipDetail = Boolean(ref.name) || Boolean(ref.type.listReturnsDetail);
+              const detail = skipDetail ? record : await retrieveComponent(this.org, this.apiVersion, ref.type, name);
               const filePath = await writeComponentFile(outputRoot, ref.type, name, detail);
               return { type: ref.type.type, name, filePath };
             })
