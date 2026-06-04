@@ -129,6 +129,7 @@ export const data360MetadataTypes: Data360MetadataType[] = [
     updateEndpoint: '/connections/:name',
     arrayKey: 'connections',
     nameFields: ['id', 'name', 'developerName', 'label'],
+    pathParamFields: { name: ['id', 'name', 'developerName', 'label'] },
     deployUnsupportedReason:
       'Connection updates require a connector-specific polymorphic request body that is not present in retrieved connection metadata.',
   },
@@ -214,6 +215,7 @@ export const data360MetadataTypes: Data360MetadataType[] = [
     createEndpoint: '/data-lake-objects',
     updateEndpoint: '/data-lake-objects/:name',
     nameFields: ['developerName', 'name', 'apiName', 'id'],
+    pathParamFields: { name: ['id', 'developerName', 'name', 'apiName'] },
   },
   {
     type: 'Data360DataModelObject',
@@ -373,8 +375,10 @@ export const data360MetadataTypes: Data360MetadataType[] = [
     detailEndpoint: '/machine-learning/configured-models/:configuredModelIdOrName',
     updateEndpoint: '/machine-learning/configured-models/:configuredModelIdOrName',
     arrayKey: 'configuredModels',
-    nameFields: ['name', 'developerName', 'apiName', 'id', 'modelSetupId'],
-    pathParamFields: { configuredModelIdOrName: ['name', 'developerName', 'apiName', 'id', '__data360ProjectName'] },
+    nameFields: ['qualifiedName', 'name', 'developerName', 'apiName', 'id', 'modelSetupId'],
+    pathParamFields: {
+      configuredModelIdOrName: ['qualifiedName', 'id', 'name', 'developerName', 'apiName', '__data360ProjectName'],
+    },
     createUnsupportedReason:
       'Configured models expose list, get, update, and delete APIs, but no create API in the Data 360 swagger.',
   },
@@ -392,8 +396,10 @@ export const data360MetadataTypes: Data360MetadataType[] = [
     detailEndpoint: '/machine-learning/model-artifacts/:modelArtifactIdOrName',
     updateEndpoint: '/machine-learning/model-artifacts/:modelArtifactIdOrName',
     arrayKey: 'modelArtifacts',
-    nameFields: ['name', 'developerName', 'apiName', 'id'],
-    pathParamFields: { modelArtifactIdOrName: ['name', 'developerName', 'apiName', 'id', '__data360ProjectName'] },
+    nameFields: ['qualifiedName', 'name', 'developerName', 'apiName', 'id'],
+    pathParamFields: {
+      modelArtifactIdOrName: ['qualifiedName', 'id', 'name', 'developerName', 'apiName', '__data360ProjectName'],
+    },
     createUnsupportedReason:
       'Model artifacts expose list, get, update, and delete APIs, but no create API in the Data 360 swagger.',
   },
@@ -622,6 +628,25 @@ const annotateProjectRecord = (
 const shouldAnnotateProjectRecord = (type: Data360MetadataType): boolean =>
   Boolean(type.projectNameFields ?? type.compositeNameFields ?? type.singletonName);
 
+const withDerivedFields = (type: Data360MetadataType, record: Record<string, unknown>): Record<string, unknown> => {
+  if (
+    (type.type === 'Data360MachineLearningConfiguredModel' || type.type === 'Data360MachineLearningModelArtifact') &&
+    typeof record.namespace === 'string' &&
+    record.namespace.length > 0 &&
+    typeof record.name === 'string' &&
+    record.name.length > 0 &&
+    record.qualifiedName === undefined
+  ) {
+    return { ...record, qualifiedName: `${record.namespace}__${record.name}` };
+  }
+  return record;
+};
+
+const prepareListRecords = (
+  type: Data360MetadataType,
+  records: Array<Record<string, unknown>>
+): Array<Record<string, unknown>> => records.map((record) => withDerivedFields(type, record));
+
 export const getData360MetadataType = (input: string): Data360MetadataType => {
   const type = typeByAlias.get(normalizeTypeKey(input));
   if (!type) {
@@ -829,15 +854,17 @@ export const retrieveComponent = async (
   org: Org,
   apiVersion: string,
   type: Data360MetadataType,
-  name: string
+  name: string,
+  seed: Record<string, unknown> = {}
 ): Promise<Record<string, unknown>> => {
   const response = await ssotGet<Record<string, unknown>>(
     org,
     apiVersion,
-    buildEndpointPath(type, type.detailEndpoint, {}, name)
+    buildEndpointPath(type, type.detailEndpoint, seed, name)
   );
   if (!isRecord(response)) return {};
-  return shouldAnnotateProjectRecord(type) ? annotateProjectRecord(type, response) : response;
+  const body = withDerivedFields(type, unwrapSingletonResponse(type, response));
+  return shouldAnnotateProjectRecord(type) ? annotateProjectRecord(type, body) : body;
 };
 
 const DMO_MAPPING_LIST_CONCURRENCY = 20;
@@ -1148,13 +1175,16 @@ export const listComponents = async (
     );
   }
   if (fetchAll) {
-    return fetchAllPages<Record<string, unknown>>(
-      org,
-      apiVersion,
-      buildPath(type.listEndpoint, undefined, type.listQuery),
-      { all: true, batchSize: DEFAULT_BATCH_SIZE },
-      undefined,
-      type.arrayKey
+    return prepareListRecords(
+      type,
+      await fetchAllPages<Record<string, unknown>>(
+        org,
+        apiVersion,
+        buildPath(type.listEndpoint, undefined, type.listQuery),
+        { all: true, batchSize: DEFAULT_BATCH_SIZE },
+        undefined,
+        type.arrayKey
+      )
     );
   }
 
@@ -1167,10 +1197,10 @@ export const listComponents = async (
     undefined,
     type.arrayKey
   );
-  if (page.data.length) return page.data;
+  if (page.data.length) return prepareListRecords(type, page.data);
 
   const response = await ssotGet<unknown>(org, apiVersion, buildPath(type.listEndpoint, undefined, type.listQuery));
-  return getRecordsFromListResponse(response, type.arrayKey);
+  return prepareListRecords(type, getRecordsFromListResponse(response, type.arrayKey));
 };
 
 export const deployComponent = async (
