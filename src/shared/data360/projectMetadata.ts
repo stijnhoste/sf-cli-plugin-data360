@@ -2,7 +2,7 @@ import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path';
 import { SfError, SfProject } from '@salesforce/core';
 import { Org } from '@salesforce/core';
-import { buildPath, injectResourceId } from './pathBuilder.js';
+import { buildPath } from './pathBuilder.js';
 import { fetchAllPages, fetchPage } from './pagination.js';
 import { ssotGet, ssotPatch, ssotPost, ssotPut } from './ssotClient.js';
 
@@ -10,17 +10,33 @@ export type Data360MetadataType = {
   type: string;
   aliases: string[];
   directoryName: string;
-  listEndpoint: string;
+  listEndpoint?: string;
   listQuery?: Record<string, string | number | boolean | undefined>;
-  detailEndpoint: string;
-  createEndpoint: string;
-  updateEndpoint: string;
+  detailEndpoint?: string;
+  createEndpoint?: string;
+  updateEndpoint?: string;
   arrayKey?: string;
   nameFields: string[];
+  pathParamFields?: Record<string, string[]>;
+  projectNameFields?: string[];
+  compositeNameFields?: string[];
+  singletonName?: string;
+  createMethod?: 'POST' | 'PUT';
   updateMethod?: 'PATCH' | 'PUT';
+  createUnsupportedReason?: string;
+  updateUnsupportedReason?: string;
   deployUnsupportedReason?: string;
   /** Custom list strategy when the generic list endpoint can't be bulk-queried. */
-  customList?: 'dmoMappings';
+  customList?:
+    | 'dmoMappings'
+    | 'dmoRelationships'
+    | 'dataSpaceMembers'
+    | 'dataTransformSchedules'
+    | 'connectionSchemas'
+    | 'connectionSitemaps'
+    | 'mlModelSetupVersions'
+    | 'mlModelSetupVersionPartitions'
+    | 'singleton';
   /** When true, list responses already contain full detail and retrieve can skip the per-record GET. */
   listReturnsDetail?: boolean;
 };
@@ -59,6 +75,16 @@ const DEFAULT_BATCH_SIZE = 200;
 const normalizeTypeKey = (value: string): string => value.replace(/[\s_-]/g, '').toLowerCase();
 
 export const data360MetadataTypes: Data360MetadataType[] = [
+  {
+    type: 'Data360ActivationExternalPlatform',
+    aliases: ['activation-external-platform', 'activation-external-platforms', 'Data360ActivationExternalPlatform'],
+    directoryName: 'activation-external-platforms',
+    listEndpoint: '/activation-external-platforms',
+    arrayKey: 'externalPlatforms',
+    nameFields: ['id', 'name', 'apiName', 'developerName', 'platformName'],
+    listReturnsDetail: true,
+    deployUnsupportedReason: 'Activation external platforms are a read-only catalogue in the Data 360 API.',
+  },
   {
     type: 'Data360Activation',
     aliases: ['activation', 'activations', 'Data360Activation'],
@@ -107,16 +133,54 @@ export const data360MetadataTypes: Data360MetadataType[] = [
       'Connection updates require a connector-specific polymorphic request body that is not present in retrieved connection metadata.',
   },
   {
+    type: 'Data360ConnectionSchema',
+    aliases: ['connection-schema', 'connection-schemas', 'Data360ConnectionSchema'],
+    directoryName: 'connection-schemas',
+    detailEndpoint: '/connections/:connectionId/schema',
+    updateEndpoint: '/connections/:connectionId/schema',
+    updateMethod: 'PUT',
+    nameFields: ['__data360ProjectName', 'connectionId', 'id', 'name'],
+    pathParamFields: { connectionId: ['connectionId', 'id', 'name', '__data360ProjectName'] },
+    projectNameFields: ['connectionId', 'id', 'name'],
+    customList: 'connectionSchemas',
+    listReturnsDetail: true,
+    createUnsupportedReason: 'Connection schemas are upserted with the update operation.',
+  },
+  {
+    type: 'Data360ConnectionSitemap',
+    aliases: ['connection-sitemap', 'connection-sitemaps', 'Data360ConnectionSitemap'],
+    directoryName: 'connection-sitemaps',
+    detailEndpoint: '/connections/:connectionId/sitemap',
+    updateEndpoint: '/connections/:connectionId/sitemap',
+    updateMethod: 'PUT',
+    nameFields: ['__data360ProjectName', 'connectionId', 'id', 'name'],
+    pathParamFields: { connectionId: ['connectionId', 'id', 'name', '__data360ProjectName'] },
+    projectNameFields: ['connectionId', 'id', 'name'],
+    customList: 'connectionSitemaps',
+    listReturnsDetail: true,
+    createUnsupportedReason: 'Connection sitemaps are upserted with the update operation.',
+  },
+  {
+    type: 'Data360Connector',
+    aliases: ['connector', 'connectors', 'Data360Connector'],
+    directoryName: 'connectors',
+    listEndpoint: '/connectors',
+    detailEndpoint: '/connectors/:connectorType',
+    arrayKey: 'connectors',
+    nameFields: ['name', 'connectorType', 'id', 'apiName', 'developerName'],
+    pathParamFields: { connectorType: ['name', 'connectorType', 'id', '__data360ProjectName'] },
+    deployUnsupportedReason: 'Connectors are a read-only catalogue in the Data 360 API.',
+  },
+  {
     type: 'Data360DataAction',
     aliases: ['data-action', 'data-actions', 'Data360DataAction'],
     directoryName: 'data-actions',
     listEndpoint: '/data-actions',
-    detailEndpoint: '/data-actions/:name',
     createEndpoint: '/data-actions',
-    updateEndpoint: '/data-actions/:name',
+    arrayKey: 'dataActions',
     nameFields: ['apiName', 'developerName', 'name', 'id'],
-    deployUnsupportedReason:
-      'Data action update APIs reject retrieved Flow-backed action metadata; deploy requires an authoring-specific payload.',
+    listReturnsDetail: true,
+    updateUnsupportedReason: 'Data actions expose create and list APIs, but no update API in the Data 360 swagger.',
   },
   {
     type: 'Data360DataActionTarget',
@@ -125,10 +189,10 @@ export const data360MetadataTypes: Data360MetadataType[] = [
     listEndpoint: '/data-action-targets',
     detailEndpoint: '/data-action-targets/:name',
     createEndpoint: '/data-action-targets',
-    updateEndpoint: '/data-action-targets/:name',
+    arrayKey: 'dataActionTargets',
     nameFields: ['apiName', 'developerName', 'name', 'id'],
-    deployUnsupportedReason:
-      'Data action target update APIs reject retrieved Core/Flow-backed target metadata; deploy requires an authoring-specific payload.',
+    updateUnsupportedReason:
+      'Data action targets expose create, get, signing-key, and delete APIs, but no update API in the Data 360 swagger.',
   },
   {
     type: 'Data360DataGraph',
@@ -137,10 +201,9 @@ export const data360MetadataTypes: Data360MetadataType[] = [
     listEndpoint: '/data-graphs/metadata',
     detailEndpoint: '/data-graphs/:name',
     createEndpoint: '/data-graphs',
-    updateEndpoint: '/data-graphs/:name',
     nameFields: ['name', 'apiName', 'developerName', 'id'],
-    deployUnsupportedReason:
-      'Data graph detail responses contain generated runtime metadata; the update API requires an authoring payload with participating DMOs.',
+    updateUnsupportedReason:
+      'Data graphs expose create, get, refresh, and delete APIs, but no update API in the Data 360 swagger.',
   },
   {
     type: 'Data360DataLakeObject',
@@ -151,8 +214,6 @@ export const data360MetadataTypes: Data360MetadataType[] = [
     createEndpoint: '/data-lake-objects',
     updateEndpoint: '/data-lake-objects/:name',
     nameFields: ['developerName', 'name', 'apiName', 'id'],
-    deployUnsupportedReason:
-      'Data lake objects associated with data streams must be managed through data stream APIs, not direct DLO metadata replay.',
   },
   {
     type: 'Data360DataModelObject',
@@ -176,12 +237,34 @@ export const data360MetadataTypes: Data360MetadataType[] = [
     listEndpoint: '/data-model-object-mappings',
     detailEndpoint: '/data-model-object-mappings/:name',
     createEndpoint: '/data-model-object-mappings',
-    updateEndpoint: '/data-model-object-mappings/:name',
     arrayKey: 'objectSourceTargetMaps',
     nameFields: ['developerName', 'objectSourceTargetMapDeveloperName', 'name', 'id'],
     customList: 'dmoMappings',
     listReturnsDetail: true,
-    deployUnsupportedReason: 'Existing DMO mappings expose GET/DELETE APIs but no update method for metadata replay.',
+    updateUnsupportedReason:
+      'DMO mappings expose create, get, and delete APIs, but no update API in the Data 360 swagger.',
+  },
+  {
+    type: 'Data360DataModelObjectRelationship',
+    aliases: [
+      'dmo-relationship',
+      'dmo-relationships',
+      'data-model-object-relationship',
+      'data-model-object-relationships',
+      'Data360DataModelObjectRelationship',
+    ],
+    directoryName: 'data-model-object-relationships',
+    detailEndpoint: '/data-model-objects/:dataModelObjectName/relationships',
+    createEndpoint: '/data-model-objects/:dataModelObjectName/relationships',
+    arrayKey: 'relationships',
+    nameFields: ['__data360ProjectName', 'name', 'developerName', 'id'],
+    pathParamFields: { dataModelObjectName: ['dataModelObjectName', 'sourceObjectName', 'sourceDmoName'] },
+    projectNameFields: ['dataModelObjectName', 'sourceObjectName', 'sourceDmoName'],
+    compositeNameFields: ['dataModelObjectName', 'name'],
+    customList: 'dmoRelationships',
+    listReturnsDetail: true,
+    updateUnsupportedReason:
+      'DMO relationships expose bulk create and delete APIs, but no update API in the Data 360 swagger.',
   },
   {
     type: 'Data360DataSpace',
@@ -192,6 +275,27 @@ export const data360MetadataTypes: Data360MetadataType[] = [
     createEndpoint: '/data-spaces',
     updateEndpoint: '/data-spaces/:name',
     nameFields: ['name', 'developerName', 'apiName', 'id'],
+  },
+  {
+    type: 'Data360DataSpaceMember',
+    aliases: ['data-space-member', 'data-space-members', 'Data360DataSpaceMember'],
+    directoryName: 'data-space-members',
+    listEndpoint: '/data-spaces/:idOrName/members',
+    detailEndpoint: '/data-spaces/:idOrName/members/:dataSpaceMemberObjectName',
+    createEndpoint: '/data-spaces/:idOrName/members',
+    updateEndpoint: '/data-spaces/:idOrName/members',
+    createMethod: 'PUT',
+    updateMethod: 'PUT',
+    arrayKey: 'members',
+    nameFields: ['__data360ProjectName', 'dataSpaceMemberObjectName', 'name', 'objectName', 'id'],
+    pathParamFields: {
+      idOrName: ['idOrName', 'dataSpaceName', 'dataSpaceId'],
+      dataSpaceMemberObjectName: ['dataSpaceMemberObjectName', 'name', 'objectName', 'id'],
+    },
+    projectNameFields: ['dataSpaceName', 'idOrName', 'dataSpaceId'],
+    compositeNameFields: ['dataSpaceName', 'dataSpaceMemberObjectName'],
+    customList: 'dataSpaceMembers',
+    listReturnsDetail: true,
   },
   {
     type: 'Data360DataStream',
@@ -215,14 +319,23 @@ export const data360MetadataTypes: Data360MetadataType[] = [
     nameFields: ['name', 'developerName', 'apiName', 'id'],
   },
   {
-    type: 'Data360DocumentProcessingConfiguration',
-    aliases: ['docai-config', 'document-processing-configuration', 'Data360DocumentProcessingConfiguration'],
-    directoryName: 'document-processing-configurations',
-    listEndpoint: '/document-processing/configurations',
-    detailEndpoint: '/document-processing/configurations/:name',
-    createEndpoint: '/document-processing/configurations',
-    updateEndpoint: '/document-processing/configurations/:name',
-    nameFields: ['apiName', 'developerName', 'name', 'id'],
+    type: 'Data360DataTransformSchedule',
+    aliases: [
+      'transform-schedule',
+      'data-transform-schedule',
+      'data-transform-schedules',
+      'Data360DataTransformSchedule',
+    ],
+    directoryName: 'data-transform-schedules',
+    detailEndpoint: '/data-transforms/:dataTransformNameOrId/schedule',
+    updateEndpoint: '/data-transforms/:dataTransformNameOrId/schedule',
+    updateMethod: 'PUT',
+    nameFields: ['__data360ProjectName', 'dataTransformNameOrId', 'name', 'id'],
+    pathParamFields: { dataTransformNameOrId: ['dataTransformNameOrId', 'dataTransformName', 'name', 'id'] },
+    projectNameFields: ['dataTransformNameOrId', 'dataTransformName', 'name', 'id'],
+    customList: 'dataTransformSchedules',
+    listReturnsDetail: true,
+    createUnsupportedReason: 'Data transform schedules are upserted with the update operation.',
   },
   {
     type: 'Data360IdentityResolution',
@@ -233,6 +346,139 @@ export const data360MetadataTypes: Data360MetadataType[] = [
     createEndpoint: '/identity-resolutions',
     updateEndpoint: '/identity-resolutions/:name',
     nameFields: ['name', 'developerName', 'apiName', 'id'],
+  },
+  {
+    type: 'Data360InsightMetadata',
+    aliases: ['insight-metadata', 'insights-metadata', 'Data360InsightMetadata'],
+    directoryName: 'insight-metadata',
+    listEndpoint: '/insight/metadata',
+    detailEndpoint: '/insight/metadata/:ciName',
+    arrayKey: 'metadata',
+    nameFields: ['name', 'apiName', 'developerName', 'ciName', 'id'],
+    pathParamFields: { ciName: ['name', 'apiName', 'developerName', 'ciName', 'id', '__data360ProjectName'] },
+    listReturnsDetail: true,
+    deployUnsupportedReason: 'Insight metadata is read-only in the Data 360 API.',
+  },
+  {
+    type: 'Data360MachineLearningConfiguredModel',
+    aliases: [
+      'machine-learning-configured-model',
+      'machine-learning-configured-models',
+      'ml-configured-model',
+      'ml-configured-models',
+      'Data360MachineLearningConfiguredModel',
+    ],
+    directoryName: 'machine-learning-configured-models',
+    listEndpoint: '/machine-learning/configured-models',
+    detailEndpoint: '/machine-learning/configured-models/:configuredModelIdOrName',
+    updateEndpoint: '/machine-learning/configured-models/:configuredModelIdOrName',
+    arrayKey: 'configuredModels',
+    nameFields: ['name', 'developerName', 'apiName', 'id', 'modelSetupId'],
+    pathParamFields: { configuredModelIdOrName: ['name', 'developerName', 'apiName', 'id', '__data360ProjectName'] },
+    createUnsupportedReason:
+      'Configured models expose list, get, update, and delete APIs, but no create API in the Data 360 swagger.',
+  },
+  {
+    type: 'Data360MachineLearningModelArtifact',
+    aliases: [
+      'machine-learning-model-artifact',
+      'machine-learning-model-artifacts',
+      'ml-model-artifact',
+      'ml-model-artifacts',
+      'Data360MachineLearningModelArtifact',
+    ],
+    directoryName: 'machine-learning-model-artifacts',
+    listEndpoint: '/machine-learning/model-artifacts',
+    detailEndpoint: '/machine-learning/model-artifacts/:modelArtifactIdOrName',
+    updateEndpoint: '/machine-learning/model-artifacts/:modelArtifactIdOrName',
+    arrayKey: 'modelArtifacts',
+    nameFields: ['name', 'developerName', 'apiName', 'id'],
+    pathParamFields: { modelArtifactIdOrName: ['name', 'developerName', 'apiName', 'id', '__data360ProjectName'] },
+    createUnsupportedReason:
+      'Model artifacts expose list, get, update, and delete APIs, but no create API in the Data 360 swagger.',
+  },
+  {
+    type: 'Data360MachineLearningModelSetupVersion',
+    aliases: [
+      'machine-learning-model-setup-version',
+      'machine-learning-model-setup-versions',
+      'ml-model-setup-version',
+      'ml-model-setup-versions',
+      'Data360MachineLearningModelSetupVersion',
+    ],
+    directoryName: 'machine-learning-model-setup-versions',
+    detailEndpoint: '/machine-learning/model-setups/:modelSetupIdOrName/setup-versions/:modelSetupVersionId',
+    createEndpoint: '/machine-learning/model-setups/:modelSetupIdOrName/setup-versions',
+    updateEndpoint: '/machine-learning/model-setups/:modelSetupIdOrName/setup-versions/:modelSetupVersionId',
+    arrayKey: 'versions',
+    nameFields: ['__data360ProjectName', 'id', 'name', 'developerName', 'apiName'],
+    pathParamFields: {
+      modelSetupIdOrName: ['modelSetupIdOrName', 'modelSetupId', 'modelSetupName'],
+      modelSetupVersionId: ['modelSetupVersionId', 'id', 'versionId'],
+    },
+    projectNameFields: ['modelSetupIdOrName', 'modelSetupId', 'modelSetupName'],
+    compositeNameFields: ['modelSetupIdOrName', 'modelSetupVersionId'],
+    customList: 'mlModelSetupVersions',
+    listReturnsDetail: true,
+  },
+  {
+    type: 'Data360MachineLearningModelSetupVersionPartition',
+    aliases: [
+      'machine-learning-model-setup-version-partition',
+      'machine-learning-model-setup-version-partitions',
+      'ml-model-setup-version-partition',
+      'ml-model-setup-version-partitions',
+      'Data360MachineLearningModelSetupVersionPartition',
+    ],
+    directoryName: 'machine-learning-model-setup-version-partitions',
+    detailEndpoint:
+      '/machine-learning/model-setups/:modelSetupIdOrName/setup-versions/:modelSetupVersionId/partitions/:modelSetupPartitionId',
+    arrayKey: 'partitions',
+    nameFields: ['__data360ProjectName', 'id', 'name', 'developerName', 'apiName'],
+    pathParamFields: {
+      modelSetupIdOrName: ['modelSetupIdOrName', 'modelSetupId', 'modelSetupName'],
+      modelSetupVersionId: ['modelSetupVersionId', 'versionId'],
+      modelSetupPartitionId: ['modelSetupPartitionId', 'id', 'partitionId'],
+    },
+    projectNameFields: ['modelSetupIdOrName', 'modelSetupVersionId'],
+    compositeNameFields: ['modelSetupIdOrName', 'modelSetupVersionId', 'modelSetupPartitionId'],
+    customList: 'mlModelSetupVersionPartitions',
+    listReturnsDetail: true,
+    deployUnsupportedReason: 'Model setup version partitions are read-only in the Data 360 API.',
+  },
+  {
+    type: 'Data360Metadata',
+    aliases: ['metadata', 'Data360Metadata'],
+    directoryName: 'metadata',
+    listEndpoint: '/metadata',
+    arrayKey: 'metadata',
+    nameFields: ['name', 'apiName', 'developerName', 'id'],
+    listReturnsDetail: true,
+    deployUnsupportedReason: 'The Data 360 metadata endpoint is read-only.',
+  },
+  {
+    type: 'Data360MetadataEntity',
+    aliases: ['metadata-entity', 'metadata-entities', 'Data360MetadataEntity'],
+    directoryName: 'metadata-entities',
+    listEndpoint: '/metadata-entities',
+    arrayKey: 'metadata',
+    nameFields: ['name', 'apiName', 'developerName', 'id'],
+    listReturnsDetail: true,
+    deployUnsupportedReason: 'Metadata entities are read-only in the Data 360 API.',
+  },
+  {
+    type: 'Data360ProfileMetadata',
+    aliases: ['profile-metadata', 'profiles-metadata', 'Data360ProfileMetadata'],
+    directoryName: 'profile-metadata',
+    listEndpoint: '/profile/metadata',
+    detailEndpoint: '/profile/metadata/:dataModelName',
+    arrayKey: 'metadata',
+    nameFields: ['name', 'apiName', 'developerName', 'dataModelName', 'id'],
+    pathParamFields: {
+      dataModelName: ['name', 'apiName', 'developerName', 'dataModelName', 'id', '__data360ProjectName'],
+    },
+    listReturnsDetail: true,
+    deployUnsupportedReason: 'Profile metadata is read-only in the Data 360 API.',
   },
   {
     type: 'Data360SearchIndex',
@@ -279,6 +525,103 @@ const firstString = (record: Record<string, unknown>, fields: string[]): string 
   return undefined;
 };
 
+const pathParamNames = (endpoint: string): string[] =>
+  Array.from(endpoint.matchAll(/:([a-zA-Z]\w*)/g), (match) => match[1]);
+
+const compositeNameParts = (name: string | undefined): string[] | undefined => {
+  if (!name?.includes('/')) return undefined;
+  const parts = name.split('/').filter((part) => part.length > 0);
+  return parts.length ? parts : undefined;
+};
+
+const firstStringFromAny = (record: Record<string, unknown>, fields: Array<string | undefined>): string | undefined =>
+  firstString(
+    record,
+    fields.filter((field): field is string => Boolean(field))
+  );
+
+const fieldValueForPathParam = (
+  type: Data360MetadataType,
+  body: Record<string, unknown>,
+  paramName: string,
+  fallbackName?: string
+): string | undefined => {
+  const configuredFields = type.pathParamFields?.[paramName] ?? [];
+  const directValue = firstStringFromAny(body, [
+    ...configuredFields,
+    paramName,
+    '__data360ProjectName',
+    'name',
+    'developerName',
+    'apiName',
+    'id',
+  ]);
+  if (directValue && directValue !== fallbackName) return directValue;
+
+  const compositeFields = type.compositeNameFields ?? [];
+  const compositeIndex = compositeFields.indexOf(paramName);
+  const fallbackParts = compositeNameParts(fallbackName);
+  if (fallbackParts && compositeIndex !== -1) return fallbackParts[compositeIndex];
+
+  return directValue ?? fallbackName;
+};
+
+const buildEndpointPath = (
+  type: Data360MetadataType,
+  endpoint: string | undefined,
+  body: Record<string, unknown>,
+  fallbackName?: string
+): string => {
+  if (!endpoint) {
+    throw new SfError(`No Data 360 API endpoint is configured for ${type.type}.`, 'DATA360_METADATA_ENDPOINT_MISSING');
+  }
+
+  let path = endpoint;
+  for (const paramName of pathParamNames(endpoint)) {
+    const value = fieldValueForPathParam(type, body, paramName, fallbackName);
+    if (!value) {
+      throw new SfError(
+        `Could not determine path parameter "${paramName}" for ${type.type}. Include it in the source file or use a composite metadata name.`,
+        'DATA360_METADATA_PATH_PARAM_MISSING'
+      );
+    }
+    path = path.replace(`:${paramName}`, encodeURIComponent(value));
+  }
+  return path;
+};
+
+const projectNameFromBody = (
+  type: Data360MetadataType,
+  body: Record<string, unknown>,
+  fallback?: string
+): string | undefined => {
+  if (type.singletonName) return type.singletonName;
+
+  if (type.compositeNameFields?.length) {
+    const values = type.compositeNameFields.map((field) => firstString(body, [field]));
+    if (values.every((value): value is string => Boolean(value))) return values.join('/');
+  }
+
+  return firstString(body, ['__data360ProjectName', ...(type.projectNameFields ?? []), ...type.nameFields]) ?? fallback;
+};
+
+const annotateProjectRecord = (
+  type: Data360MetadataType,
+  record: Record<string, unknown>,
+  extra: Record<string, string | undefined> = {}
+): Record<string, unknown> => {
+  const output: Record<string, unknown> = { ...record };
+  for (const [key, value] of Object.entries(extra)) {
+    if (value && output[key] === undefined) output[key] = value;
+  }
+  const projectName = projectNameFromBody(type, output);
+  if (projectName && output['__data360ProjectName'] === undefined) output['__data360ProjectName'] = projectName;
+  return output;
+};
+
+const shouldAnnotateProjectRecord = (type: Data360MetadataType): boolean =>
+  Boolean(type.projectNameFields ?? type.compositeNameFields ?? type.singletonName);
+
 export const getData360MetadataType = (input: string): Data360MetadataType => {
   const type = typeByAlias.get(normalizeTypeKey(input));
   if (!type) {
@@ -309,7 +652,7 @@ export const getComponentName = (
   body: Record<string, unknown>,
   fallback?: string
 ): string => {
-  const value = firstString(body, type.nameFields) ?? fallback;
+  const value = projectNameFromBody(type, body, fallback);
   if (!value) {
     throw new SfError(`Could not determine a component name for ${type.type}.`, 'DATA360_METADATA_NAME_MISSING');
   }
@@ -421,8 +764,18 @@ const cleanIdentityResolutionRules = (body: Record<string, unknown>): Record<str
   return output;
 };
 
-const getDeploySkipReason = (file: Data360ProjectFile): string | undefined => {
+const getOperationSkipReason = (file: Data360ProjectFile, operation: 'create' | 'update'): string | undefined => {
   if (file.type.deployUnsupportedReason) return file.type.deployUnsupportedReason;
+
+  if (operation === 'create') {
+    if (file.type.createUnsupportedReason) return file.type.createUnsupportedReason;
+    if (!file.type.createEndpoint) return `${file.type.type} does not expose a create API in the Data 360 swagger.`;
+  }
+
+  if (operation === 'update') {
+    if (file.type.updateUnsupportedReason) return file.type.updateUnsupportedReason;
+    if (!file.type.updateEndpoint) return `${file.type.type} does not expose an update API in the Data 360 swagger.`;
+  }
 
   const body = unwrapSingletonResponse(file.type, file.body);
   if (file.type.type === 'Data360DataTransform') {
@@ -478,8 +831,13 @@ export const retrieveComponent = async (
   type: Data360MetadataType,
   name: string
 ): Promise<Record<string, unknown>> => {
-  const response = await ssotGet<Record<string, unknown>>(org, apiVersion, injectResourceId(type.detailEndpoint, name));
-  return isRecord(response) ? response : {};
+  const response = await ssotGet<Record<string, unknown>>(
+    org,
+    apiVersion,
+    buildEndpointPath(type, type.detailEndpoint, {}, name)
+  );
+  if (!isRecord(response)) return {};
+  return shouldAnnotateProjectRecord(type) ? annotateProjectRecord(type, response) : response;
 };
 
 const DMO_MAPPING_LIST_CONCURRENCY = 20;
@@ -544,6 +902,215 @@ const listDmoMappings = async (org: Org, apiVersion: string): Promise<Array<Reco
   return mappings;
 };
 
+const getTypeByTypeName = (typeName: string): Data360MetadataType => {
+  const type = data360MetadataTypes.find((metadataType) => metadataType.type === typeName);
+  if (!type) throw new SfError(`${typeName} metadata type missing.`, 'DATA360_METADATA_TYPE_UNSUPPORTED');
+  return type;
+};
+
+const listChildCollection = async (
+  org: Org,
+  apiVersion: string,
+  parentType: Data360MetadataType,
+  childType: Data360MetadataType,
+  endpoint: string,
+  parentParamName: string,
+  childArrayKey: string,
+  childExtra: (parentName: string, record: Record<string, unknown>) => Record<string, string | undefined>
+): Promise<Array<Record<string, unknown>>> => {
+  const parents = await listComponents(org, apiVersion, parentType, true);
+  const parentNames = parents
+    .map((parent) => firstString(parent, parentType.nameFields))
+    .filter((name): name is string => Boolean(name));
+
+  const perParent = await mapWithConcurrency(parentNames, DMO_MAPPING_LIST_CONCURRENCY, async (parentName) => {
+    try {
+      const response = await ssotGet<Record<string, unknown>>(
+        org,
+        apiVersion,
+        buildEndpointPath(childType, endpoint, { [parentParamName]: parentName })
+      );
+      return getRecordsFromListResponse(response, childArrayKey).map((record) =>
+        annotateProjectRecord(childType, record, childExtra(parentName, record))
+      );
+    } catch {
+      return [];
+    }
+  });
+
+  return perParent.flat();
+};
+
+const listConnectionChildren = async (
+  org: Org,
+  apiVersion: string,
+  childType: Data360MetadataType,
+  endpoint: string
+): Promise<Array<Record<string, unknown>>> => {
+  const connectionType = getTypeByTypeName('Data360Connection');
+  const connections = await listComponents(org, apiVersion, connectionType, true);
+  const connectionIds = connections
+    .map((connection) => firstString(connection, connectionType.nameFields))
+    .filter((name): name is string => Boolean(name));
+
+  const perConnection = await mapWithConcurrency(connectionIds, DMO_MAPPING_LIST_CONCURRENCY, async (connectionId) => {
+    try {
+      const response = await ssotGet<Record<string, unknown>>(
+        org,
+        apiVersion,
+        buildEndpointPath(childType, endpoint, { connectionId })
+      );
+      return [annotateProjectRecord(childType, isRecord(response) ? response : {}, { connectionId })];
+    } catch {
+      return [];
+    }
+  });
+
+  return perConnection.flat();
+};
+
+const listDataTransformSchedules = async (
+  org: Org,
+  apiVersion: string,
+  type: Data360MetadataType
+): Promise<Array<Record<string, unknown>>> => {
+  const transformType = getTypeByTypeName('Data360DataTransform');
+  const transforms = await listComponents(org, apiVersion, transformType, true);
+  const transformNames = transforms
+    .map((transform) => firstString(transform, transformType.nameFields))
+    .filter((name): name is string => Boolean(name));
+
+  const perTransform = await mapWithConcurrency(transformNames, DMO_MAPPING_LIST_CONCURRENCY, async (name) => {
+    try {
+      const response = await ssotGet<Record<string, unknown>>(
+        org,
+        apiVersion,
+        buildEndpointPath(type, '/data-transforms/:dataTransformNameOrId/schedule', { dataTransformNameOrId: name })
+      );
+      return [annotateProjectRecord(type, isRecord(response) ? response : {}, { dataTransformNameOrId: name })];
+    } catch {
+      return [];
+    }
+  });
+
+  return perTransform.flat();
+};
+
+const listDmoRelationships = async (
+  org: Org,
+  apiVersion: string,
+  type: Data360MetadataType
+): Promise<Array<Record<string, unknown>>> =>
+  listChildCollection(
+    org,
+    apiVersion,
+    getTypeByTypeName('Data360DataModelObject'),
+    type,
+    '/data-model-objects/:dataModelObjectName/relationships',
+    'dataModelObjectName',
+    'relationships',
+    (dataModelObjectName, record) => ({
+      dataModelObjectName,
+      name: firstString(record, ['name', 'developerName', 'id']),
+    })
+  );
+
+const listDataSpaceMembers = async (
+  org: Org,
+  apiVersion: string,
+  type: Data360MetadataType
+): Promise<Array<Record<string, unknown>>> =>
+  listChildCollection(
+    org,
+    apiVersion,
+    getTypeByTypeName('Data360DataSpace'),
+    type,
+    '/data-spaces/:idOrName/members',
+    'idOrName',
+    'members',
+    (dataSpaceName, record) => ({
+      dataSpaceName,
+      idOrName: dataSpaceName,
+      dataSpaceMemberObjectName: firstString(record, ['dataSpaceMemberObjectName', 'name', 'objectName', 'id']),
+    })
+  );
+
+const listMlModelSetupVersions = async (
+  org: Org,
+  apiVersion: string,
+  type: Data360MetadataType
+): Promise<Array<Record<string, unknown>>> => {
+  const configuredModelType = getTypeByTypeName('Data360MachineLearningConfiguredModel');
+  const configuredModels = await listComponents(org, apiVersion, configuredModelType, true);
+  const modelSetupNames = configuredModels
+    .map((model) => firstString(model, ['modelSetupId', 'id', 'name', 'developerName', 'apiName']))
+    .filter((name): name is string => Boolean(name));
+
+  const perSetup = await mapWithConcurrency(
+    modelSetupNames,
+    DMO_MAPPING_LIST_CONCURRENCY,
+    async (modelSetupIdOrName) => {
+      try {
+        const response = await ssotGet<Record<string, unknown>>(
+          org,
+          apiVersion,
+          buildEndpointPath(type, '/machine-learning/model-setups/:modelSetupIdOrName/setup-versions', {
+            modelSetupIdOrName,
+          })
+        );
+        return getRecordsFromListResponse(response, 'versions').map((record) =>
+          annotateProjectRecord(type, record, {
+            modelSetupIdOrName,
+            modelSetupVersionId: firstString(record, ['modelSetupVersionId', 'id', 'versionId']),
+          })
+        );
+      } catch {
+        return [];
+      }
+    }
+  );
+
+  return perSetup.flat();
+};
+
+const listMlModelSetupVersionPartitions = async (
+  org: Org,
+  apiVersion: string,
+  type: Data360MetadataType
+): Promise<Array<Record<string, unknown>>> => {
+  const versionType = getTypeByTypeName('Data360MachineLearningModelSetupVersion');
+  const versions = await listComponents(org, apiVersion, versionType, true);
+
+  const perVersion = await mapWithConcurrency(versions, DMO_MAPPING_LIST_CONCURRENCY, async (version) => {
+    const modelSetupIdOrName = firstString(version, ['modelSetupIdOrName', 'modelSetupId', 'modelSetupName']);
+    const modelSetupVersionId = firstString(version, ['modelSetupVersionId', 'id', 'versionId']);
+    if (!modelSetupIdOrName || !modelSetupVersionId) return [];
+
+    try {
+      const response = await ssotGet<Record<string, unknown>>(
+        org,
+        apiVersion,
+        buildEndpointPath(
+          type,
+          '/machine-learning/model-setups/:modelSetupIdOrName/setup-versions/:modelSetupVersionId/partitions',
+          { modelSetupIdOrName, modelSetupVersionId }
+        )
+      );
+      return getRecordsFromListResponse(response, 'partitions').map((record) =>
+        annotateProjectRecord(type, record, {
+          modelSetupIdOrName,
+          modelSetupVersionId,
+          modelSetupPartitionId: firstString(record, ['modelSetupPartitionId', 'id', 'partitionId']),
+        })
+      );
+    } catch {
+      return [];
+    }
+  });
+
+  return perVersion.flat();
+};
+
 export const listComponents = async (
   org: Org,
   apiVersion: string,
@@ -552,6 +1119,33 @@ export const listComponents = async (
 ): Promise<Array<Record<string, unknown>>> => {
   if (type.customList === 'dmoMappings') {
     return listDmoMappings(org, apiVersion);
+  }
+  if (type.customList === 'dmoRelationships') {
+    return listDmoRelationships(org, apiVersion, type);
+  }
+  if (type.customList === 'dataSpaceMembers') {
+    return listDataSpaceMembers(org, apiVersion, type);
+  }
+  if (type.customList === 'dataTransformSchedules') {
+    return listDataTransformSchedules(org, apiVersion, type);
+  }
+  if (type.customList === 'connectionSchemas') {
+    return listConnectionChildren(org, apiVersion, type, '/connections/:connectionId/schema');
+  }
+  if (type.customList === 'connectionSitemaps') {
+    return listConnectionChildren(org, apiVersion, type, '/connections/:connectionId/sitemap');
+  }
+  if (type.customList === 'mlModelSetupVersions') {
+    return listMlModelSetupVersions(org, apiVersion, type);
+  }
+  if (type.customList === 'mlModelSetupVersionPartitions') {
+    return listMlModelSetupVersionPartitions(org, apiVersion, type);
+  }
+  if (!type.listEndpoint) {
+    throw new SfError(
+      `${type.type} cannot be listed. Retrieve it by explicit metadata name.`,
+      'DATA360_METADATA_LIST_UNSUPPORTED'
+    );
   }
   if (fetchAll) {
     return fetchAllPages<Record<string, unknown>>(
@@ -585,16 +1179,22 @@ export const deployComponent = async (
   file: Data360ProjectFile,
   operation: 'create' | 'update' | 'upsert'
 ): Promise<DeployComponentResult> => {
-  const skippedReason = getDeploySkipReason(file);
-  if (skippedReason) return { operation: 'skipped', skippedReason };
-
-  if (operation === 'create') {
-    await ssotPost<Record<string, unknown>>(org, apiVersion, file.type.createEndpoint, getDeployBody(file));
-    return { operation: 'create' };
-  }
+  const create = async (): Promise<void> => {
+    const skippedReason = getOperationSkipReason(file, 'create');
+    if (skippedReason) throw new SfError(skippedReason, 'DATA360_METADATA_DEPLOY_SKIPPED');
+    const path = buildEndpointPath(file.type, file.type.createEndpoint, file.body, file.name);
+    const body = getDeployBody(file);
+    if (file.type.createMethod === 'PUT') {
+      await ssotPut<Record<string, unknown>>(org, apiVersion, path, body);
+      return;
+    }
+    await ssotPost<Record<string, unknown>>(org, apiVersion, path, body);
+  };
 
   const update = async (): Promise<void> => {
-    const path = injectResourceId(file.type.updateEndpoint, file.name);
+    const skippedReason = getOperationSkipReason(file, 'update');
+    if (skippedReason) throw new SfError(skippedReason, 'DATA360_METADATA_DEPLOY_SKIPPED');
+    const path = buildEndpointPath(file.type, file.type.updateEndpoint, file.body, file.name);
     const body = getDeployBody(file);
     if (file.type.updateMethod === 'PUT') {
       await ssotPut<Record<string, unknown>>(org, apiVersion, path, body);
@@ -603,8 +1203,28 @@ export const deployComponent = async (
     await ssotPatch<Record<string, unknown>>(org, apiVersion, path, body);
   };
 
+  const skipOrThrow = (error: unknown): DeployComponentResult => {
+    if (error instanceof SfError && error.name === 'DATA360_METADATA_DEPLOY_SKIPPED') {
+      return { operation: 'skipped', skippedReason: error.message };
+    }
+    throw error;
+  };
+
+  if (operation === 'create') {
+    try {
+      await create();
+    } catch (error) {
+      return skipOrThrow(error);
+    }
+    return { operation: 'create' };
+  }
+
   if (operation === 'update') {
-    await update();
+    try {
+      await update();
+    } catch (error) {
+      return skipOrThrow(error);
+    }
     return { operation: 'update' };
   }
 
@@ -612,9 +1232,21 @@ export const deployComponent = async (
     await update();
     return { operation: 'update' };
   } catch (error) {
+    if (error instanceof SfError && error.name === 'DATA360_METADATA_DEPLOY_SKIPPED') {
+      try {
+        await create();
+        return { operation: 'create' };
+      } catch (createError) {
+        return skipOrThrow(createError);
+      }
+    }
     const message = error instanceof Error ? error.message : String(error);
     if (!message.includes('404') && !message.toLowerCase().includes('not found')) throw error;
-    await ssotPost<Record<string, unknown>>(org, apiVersion, file.type.createEndpoint, getDeployBody(file));
+    try {
+      await create();
+    } catch (createError) {
+      return skipOrThrow(createError);
+    }
     return { operation: 'create' };
   }
 };
