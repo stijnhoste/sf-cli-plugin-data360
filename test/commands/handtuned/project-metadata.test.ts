@@ -161,12 +161,22 @@ describe('data360 project metadata', () => {
     for (const metadataType of data360MetadataTypes) {
       const componentName = componentNameFor(metadataType);
       const outputRoot = join(tempDir, 'retrieve-coverage', metadataType.directoryName);
-      const responses = new Map<string, unknown>([
-        [metadataType.listEndpoint, { data: [{ [metadataType.nameFields[0]]: componentName }] }],
-        [metadataType.detailEndpoint.replace(/:[^/]+/, componentName), componentBodyFor(metadataType, componentName)],
-      ]);
+      const responses = new Map<string, unknown>();
+      if (metadataType.customList === 'dmoMappings') {
+        const dmoName = 'Sample__dlm';
+        responses.set('/data-model-objects', { data: [{ developerName: dmoName }] });
+        responses.set(`${metadataType.listEndpoint}?dmoDeveloperName=${encodeURIComponent(dmoName)}`, {
+          objectSourceTargetMaps: [componentBodyFor(metadataType, componentName)],
+        });
+      } else {
+        responses.set(metadataType.listEndpoint, { data: [{ [metadataType.nameFields[0]]: componentName }] });
+        responses.set(
+          metadataType.detailEndpoint.replace(/:[^/]+/, componentName),
+          componentBodyFor(metadataType, componentName)
+        );
+      }
 
-      if (metadataType.listQuery) {
+      if (metadataType.listQuery && metadataType.customList !== 'dmoMappings') {
         const query = Object.entries(metadataType.listQuery)
           .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(String(value))}`)
           .join('&');
