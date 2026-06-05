@@ -161,6 +161,118 @@ describe('data360 project metadata', () => {
     assert.deepEqual(requestLog[0].body, { name: 'Normalize', label: 'Normalize', definition: { steps: [] } });
   });
 
+  it('uses update-safe Data Lake Object bodies', async () => {
+    const sourceDir = join(tempDir, 'data360', 'data-lake-objects');
+    await mkdir(sourceDir, { recursive: true });
+    await writeFile(
+      join(sourceDir, 'ProfileLake.json'),
+      JSON.stringify(
+        {
+          name: 'ProfileLake__dll',
+          label: 'Profile Lake',
+          category: 'Profile',
+          dataLakeFieldInfoRepresentation: [{ name: 'Id__c', label: 'Id', dataType: 'Text' }],
+        },
+        null,
+        2
+      ),
+      'utf8'
+    );
+
+    await runCommand(Data360ProjectDeployStart, {
+      flags: {
+        'target-org': {},
+        'api-version': '66.0',
+        timing: false,
+        raw: false,
+        'source-dir': [join(tempDir, 'data360')],
+        operation: 'update',
+        'dry-run': false,
+      },
+      responses: new Map([['/data-lake-objects/ProfileLake__dll', { success: true }]]),
+    }).then(({ requestLog }) => {
+      assert.equal(requestLog[0].method, 'PATCH');
+      assert.deepEqual(requestLog[0].body, { label: 'Profile Lake' });
+    });
+  });
+
+  it('normalizes live API deploy shapes for DBT segments and data graphs', async () => {
+    const segmentDir = join(tempDir, 'segment-source', 'data360', 'segments');
+    await mkdir(segmentDir, { recursive: true });
+    await writeFile(
+      join(segmentDir, 'DbtSegment.json'),
+      JSON.stringify(
+        {
+          developerName: 'DbtSegment',
+          displayName: 'DBT Segment',
+          description: 'Segment fixture',
+          segmentOnApiName: 'ssot__Individual__dlm',
+          segmentType: 'Dbt',
+          includeDbt: { models: [{ name: 'm1', sql: 'select Id__c from Individual__dlm' }] },
+        },
+        null,
+        2
+      ),
+      'utf8'
+    );
+
+    const segmentRun = await runCommand(Data360ProjectDeployStart, {
+      flags: {
+        'target-org': {},
+        'api-version': '66.0',
+        timing: false,
+        raw: false,
+        'source-dir': [join(tempDir, 'segment-source', 'data360')],
+        operation: 'create',
+        'dry-run': false,
+      },
+      responses: new Map([['/segments', { id: '1sg000000000001AAA' }]]),
+    });
+
+    const segmentBody = segmentRun.requestLog[0].body as Record<string, unknown>;
+    assert.deepEqual(segmentBody.includeDbt, {
+      models: { models: [{ name: 'm1', sql: 'select Id__c from Individual__dlm' }] },
+    });
+
+    const graphDir = join(tempDir, 'graph-source', 'data360', 'data-graphs');
+    await mkdir(graphDir, { recursive: true });
+    await writeFile(
+      join(graphDir, 'Graph.json'),
+      JSON.stringify(
+        {
+          name: 'Graph',
+          label: 'Graph',
+          dataSpaceName: 'default',
+          primaryObjectName: 'ssot__Individual__dlm',
+          sourceObject: { name: 'ssot__Individual__dlm', dataSpaceName: 'default', relatedObjects: [] },
+        },
+        null,
+        2
+      ),
+      'utf8'
+    );
+
+    const graphRun = await runCommand(Data360ProjectDeployStart, {
+      flags: {
+        'target-org': {},
+        'api-version': '66.0',
+        timing: false,
+        raw: false,
+        'source-dir': [join(tempDir, 'graph-source', 'data360')],
+        operation: 'create',
+        'dry-run': false,
+      },
+      responses: new Map([['/data-graphs', { id: '0dg000000000001AAA' }]]),
+    });
+
+    const graphBody = graphRun.requestLog[0].body as Record<string, unknown>;
+    const graphSourceObject = graphBody.sourceObject as Record<string, unknown>;
+    assert.equal(graphBody.dataspaceName, 'default');
+    assert.equal(graphBody.dataSpaceName, undefined);
+    assert.equal(graphSourceObject.dataspaceName, 'default');
+    assert.equal(graphSourceObject.dataSpaceName, undefined);
+  });
+
   it('retrieves every Data 360 project metadata type through list and detail endpoints', async () => {
     for (const metadataType of data360MetadataTypes) {
       const componentName = componentNameFor(metadataType);
@@ -291,6 +403,25 @@ describe('data360 project metadata', () => {
           reconciliationRules: [{ entityName: 'ssot__Individual__dlm', fields: [], ruleType: 'mostfrequent' }],
         });
       }
+      if (metadataType.type === 'Data360CalculatedInsight') {
+        assert.deepEqual(request.body, {
+          displayName: 'Sample Calculated Insight',
+          description: 'Sample calculated insight',
+          expression: 'SELECT COUNT(Id__c) AS count__c FROM Sample__dlm',
+          publishScheduleInterval: 'Six',
+          publishScheduleStartDateTime: '2026-06-10T12:00',
+        });
+      }
+      if (metadataType.type === 'Data360MachineLearningConfiguredModel') {
+        assert.deepEqual(request.body, { status: 'Enabled', visibility: 'Public' });
+      }
+      if (metadataType.type === 'Data360MachineLearningModelArtifact') {
+        assert.deepEqual(request.body, {
+          description: 'Sample model artifact',
+          label: 'Sample Label',
+          status: 'Enabled',
+        });
+      }
     }
   });
 
@@ -335,6 +466,61 @@ describe('data360 project metadata', () => {
         `${metadataType.type} should use create method`
       );
     }
+  });
+
+  it('keeps create-required fields when deploying an identity resolution create', async () => {
+    const sourceDir = join(tempDir, 'data360', 'identity-resolutions');
+    await mkdir(sourceDir, { recursive: true });
+    await writeFile(
+      join(sourceDir, 'ir.json'),
+      JSON.stringify(
+        {
+          configurationType: 'Individual',
+          label: 'Identity Ruleset',
+          description: 'Identity ruleset create fixture',
+          rulesetId: 'ir01',
+          doesRunAutomatically: false,
+          matchRules: [{ label: 'Exact Email', criteria: [] }],
+          reconciliationRules: [
+            {
+              entityName: 'ssot__Individual__dlm',
+              fields: [],
+              linkDmoName: 'IndividualIdentityLink__dlm',
+              ruleType: 'mostfrequent',
+              unifiedDmoName: 'UnifiedIndividual__dlm',
+            },
+          ],
+        },
+        null,
+        2
+      ),
+      'utf8'
+    );
+
+    const { result, requestLog } = await runCommand(Data360ProjectDeployStart, {
+      flags: {
+        'target-org': {},
+        'api-version': '66.0',
+        timing: false,
+        raw: false,
+        'source-dir': [join(tempDir, 'data360')],
+        operation: 'create',
+        'dry-run': false,
+      },
+      responses: new Map([['/identity-resolutions', { id: '1ir000000000002AAA' }]]),
+    });
+
+    assert.equal(result.files[0].operation, 'create');
+    assert.equal(requestLog[0].method, 'POST');
+    assert.deepEqual(requestLog[0].body, {
+      configurationType: 'Individual',
+      label: 'Identity Ruleset',
+      description: 'Identity ruleset create fixture',
+      rulesetId: 'ir01',
+      doesRunAutomatically: false,
+      matchRules: [{ label: 'Exact Email', criteria: [] }],
+      reconciliationRules: [{ entityName: 'ssot__Individual__dlm', fields: [], ruleType: 'mostfrequent' }],
+    });
   });
 
   it('dry-runs Data 360 deploy without mutating the org', async () => {
@@ -388,6 +574,17 @@ const componentBodyFor = (metadataType: Data360MetadataType, componentName: stri
   if (metadataType.type === 'Data360DataSpace') {
     return { name: componentName, id: '0ds000000000001AAA', label: 'Sample Label', description: 'Sample Description' };
   }
+  if (metadataType.type === 'Data360CalculatedInsight') {
+    return {
+      apiName: componentName,
+      definitionType: 'CALCULATED_METRIC',
+      displayName: 'Sample Calculated Insight',
+      description: 'Sample calculated insight',
+      expression: 'SELECT COUNT(Id__c) AS count__c FROM Sample__dlm',
+      publishScheduleInterval: 'Six',
+      publishScheduleStartDateTime: '2026-06-10T12:00',
+    };
+  }
   if (metadataType.type === 'Data360DataModelObject') {
     return { name: componentName, label: 'Sample DMO', creationType: 'SYSTEM', fields: [] };
   }
@@ -438,6 +635,27 @@ const componentBodyFor = (metadataType: Data360MetadataType, componentName: stri
   }
   if (metadataType.type === 'Data360Segment') {
     return { segmentApiName: componentName, displayName: 'Sample Segment', segmentType: 'UI' };
+  }
+  if (metadataType.type === 'Data360MachineLearningConfiguredModel') {
+    return {
+      qualifiedName: componentName,
+      actionableFields: [],
+      artifact: { name: 'SampleArtifact' },
+      capability: 'ChatCompletion',
+      description: 'Sample configured model',
+      label: 'Sample Label',
+      parameterOverrides: [],
+      status: 'Enabled',
+      visibility: 'Public',
+    };
+  }
+  if (metadataType.type === 'Data360MachineLearningModelArtifact') {
+    return {
+      qualifiedName: componentName,
+      description: 'Sample model artifact',
+      label: 'Sample Label',
+      status: 'Enabled',
+    };
   }
   if (metadataType.type === 'Data360MachineLearningModelSetupVersion') {
     const [modelSetupIdOrName, modelSetupVersionId] = componentName.split('/');

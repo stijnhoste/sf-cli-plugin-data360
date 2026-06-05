@@ -775,8 +775,23 @@ const unwrapSingletonResponse = (type: Data360MetadataType, body: Record<string,
   return isRecord(first) ? first : body;
 };
 
-const cleanIdentityResolutionRules = (body: Record<string, unknown>): Record<string, unknown> => {
-  const output = pickFields(body, ['label', 'matchRules', 'reconciliationRules']);
+const cleanIdentityResolutionRules = (
+  body: Record<string, unknown>,
+  operation: 'create' | 'update'
+): Record<string, unknown> => {
+  const fields =
+    operation === 'create'
+      ? [
+          'configurationType',
+          'label',
+          'description',
+          'rulesetId',
+          'doesRunAutomatically',
+          'matchRules',
+          'reconciliationRules',
+        ]
+      : ['label', 'matchRules', 'reconciliationRules'];
+  const output = pickFields(body, fields);
   if (Array.isArray(output.reconciliationRules)) {
     output.reconciliationRules = output.reconciliationRules.map((rule) => {
       if (!isRecord(rule)) return {};
@@ -785,6 +800,41 @@ const cleanIdentityResolutionRules = (body: Record<string, unknown>): Record<str
       void unifiedDmoName;
       return cleaned;
     });
+  }
+  return output;
+};
+
+const normalizeSegmentDeployBody = (body: Record<string, unknown>): Record<string, unknown> => {
+  const output = { ...body };
+  if (isRecord(output.includeDbt) && Array.isArray(output.includeDbt.models)) {
+    output.includeDbt = { ...output.includeDbt, models: { models: output.includeDbt.models } };
+  }
+  return output;
+};
+
+const normalizeDataGraphSource = (source: Record<string, unknown>): Record<string, unknown> => {
+  const output = { ...source };
+  if (output.dataSpaceName !== undefined && output.dataspaceName === undefined) {
+    output.dataspaceName = output.dataSpaceName;
+  }
+  delete output.dataSpaceName;
+  if (Array.isArray(output.relatedObjects)) {
+    const relatedObjects = output.relatedObjects as unknown[];
+    output.relatedObjects = relatedObjects.map((related): unknown =>
+      isRecord(related) ? normalizeDataGraphSource(related) : related
+    );
+  }
+  return output;
+};
+
+const normalizeDataGraphDeployBody = (body: Record<string, unknown>): Record<string, unknown> => {
+  const output = { ...body };
+  if (output.dataSpaceName !== undefined && output.dataspaceName === undefined) {
+    output.dataspaceName = output.dataSpaceName;
+  }
+  delete output.dataSpaceName;
+  if (isRecord(output.sourceObject)) {
+    output.sourceObject = normalizeDataGraphSource(output.sourceObject);
   }
   return output;
 };
@@ -815,12 +865,23 @@ const getOperationSkipReason = (file: Data360ProjectFile, operation: 'create' | 
     return 'UI segments cannot be replayed through the segment update API, which requires DBT or Lookalike authoring payloads.';
   }
 
+  if (
+    operation === 'update' &&
+    file.type.type === 'Data360MachineLearningModelArtifact' &&
+    body.sourceType === 'OutOfTheBox'
+  ) {
+    return 'Out-of-the-box Salesforce model artifacts are read-only through the model artifact update API.';
+  }
+
   return undefined;
 };
 
-const getDeployBody = (file: Data360ProjectFile): Record<string, unknown> => {
+const getDeployBody = (file: Data360ProjectFile, operation: 'create' | 'update'): Record<string, unknown> => {
   const body = unwrapSingletonResponse(file.type, file.body);
 
+  if (file.type.type === 'Data360DataLakeObject' && operation === 'update') {
+    return pickFields(body, ['label']);
+  }
   if (file.type.type === 'Data360DataModelObject' || file.type.type === 'Data360DataStream') {
     return {};
   }
@@ -830,8 +891,48 @@ const getDeployBody = (file: Data360ProjectFile): Record<string, unknown> => {
   if (file.type.type === 'Data360DataTransform') {
     return pickFields(body, ['name', 'label', 'description', 'type', 'definition']);
   }
+  if (file.type.type === 'Data360CalculatedInsight' && operation === 'update') {
+    return pickFields(body, [
+      'displayName',
+      'description',
+      'expression',
+      'draft',
+      'createdFromPackage',
+      'dataSpaceName',
+      'publishScheduleInterval',
+      'publishScheduleStartDateTime',
+      'publishScheduleEndDate',
+    ]);
+  }
   if (file.type.type === 'Data360IdentityResolution') {
-    return cleanIdentityResolutionRules(body);
+    return cleanIdentityResolutionRules(body, operation);
+  }
+  if (file.type.type === 'Data360MachineLearningConfiguredModel') {
+    return operation === 'update'
+      ? pickFields(body, ['status', 'visibility'])
+      : pickFields(body, [
+          'actionableFields',
+          'artifact',
+          'capability',
+          'description',
+          'label',
+          'parameterOverrides',
+          'status',
+        ]);
+  }
+  if (file.type.type === 'Data360MachineLearningModelArtifact') {
+    return pickFields(body, ['description', 'label', 'status']);
+  }
+  if (file.type.type === 'Data360Segment') {
+    if (operation === 'update') {
+      return normalizeSegmentDeployBody(
+        pickFields(body, ['displayName', 'description', 'includeDbt', 'lookalikeCriteria', 'segmentType'])
+      );
+    }
+    return normalizeSegmentDeployBody(body);
+  }
+  if (file.type.type === 'Data360DataGraph') {
+    return normalizeDataGraphDeployBody(body);
   }
   return body;
 };
@@ -1213,7 +1314,7 @@ export const deployComponent = async (
     const skippedReason = getOperationSkipReason(file, 'create');
     if (skippedReason) throw new SfError(skippedReason, 'DATA360_METADATA_DEPLOY_SKIPPED');
     const path = buildEndpointPath(file.type, file.type.createEndpoint, file.body, file.name);
-    const body = getDeployBody(file);
+    const body = getDeployBody(file, 'create');
     if (file.type.createMethod === 'PUT') {
       await ssotPut<Record<string, unknown>>(org, apiVersion, path, body);
       return;
@@ -1225,7 +1326,7 @@ export const deployComponent = async (
     const skippedReason = getOperationSkipReason(file, 'update');
     if (skippedReason) throw new SfError(skippedReason, 'DATA360_METADATA_DEPLOY_SKIPPED');
     const path = buildEndpointPath(file.type, file.type.updateEndpoint, file.body, file.name);
-    const body = getDeployBody(file);
+    const body = getDeployBody(file, 'update');
     if (file.type.updateMethod === 'PUT') {
       await ssotPut<Record<string, unknown>>(org, apiVersion, path, body);
       return;
