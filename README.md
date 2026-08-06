@@ -1,14 +1,26 @@
-# sf-cli-plugin-data360
+# Data 360 project and operator workflows for Salesforce CLI
 
-> **DISCLAIMER**: This is NOT an official Salesforce product. It is an unsupported, experimental CLI plugin created for internal exploration and demo purposes. No support, warranty, or maintenance is provided. Use at your own risk. This plugin is not endorsed by, affiliated with, or supported by Salesforce, Inc.
+A Salesforce CLI plugin for bringing Data 360 resources into repeatable engineering workflows: inspect live environments, retrieve configuration into project files, review changes, validate operations, and deploy through the Connect API.
 
-A Salesforce CLI plugin for managing Data Cloud (Data 360) resources via the Connect API. 163 commands across 25 topics covering the full Data Cloud lifecycle: Connect, Prepare, Harmonize, Segment, Act, Retrieve, and project file workflows.
+## Why it exists
+
+Data 360 resources do not follow the normal Salesforce Metadata API lifecycle. That makes source-controlled delivery, environment comparison, and repeatable operator work harder than it should be. This plugin adds Data 360-aware commands and intercepts scoped `sf project retrieve start` and `sf project deploy start` operations while leaving ordinary Metadata API behavior untouched.
+
+## What it enables
+
+- Retrieve supported Data 360 resources into a predictable project structure.
+- Review and version JSON configuration alongside the rest of a Salesforce project.
+- Run dry-runs and targeted deployments through the Connect API.
+- Inspect schemas, query data, and operate the broader Data 360 lifecycle from one CLI.
+- Reuse the same authenticated workflow across multiple Salesforce orgs.
+
+> **Project status:** Independent, experimental open-source software. It is not an official Salesforce product and is not supported or endorsed by Salesforce, Inc. Use it at your own risk.
 
 ## Quick Start
 
 ```bash
 # Clone and install
-git clone git@github.com:gthoppae/sf-cli-plugin-data360.git
+git clone https://github.com/stijnhoste/sf-cli-plugin-data360.git
 cd sf-cli-plugin-data360
 yarn install
 
@@ -68,7 +80,7 @@ sf data360 man segment publish
 sf data360 man
 ```
 
-## Command Topics (163 commands)
+## Command reference
 
 | Topic                 | Commands | Description                                 |
 | --------------------- | -------- | ------------------------------------------- |
@@ -104,7 +116,7 @@ sf data360 man
 ## Testing
 
 ```bash
-# Run all tests (86 tests)
+# Run the full test suite
 npx mocha 'test/**/*.test.ts' --timeout 120000
 
 # Fast tests only (excludes smoke + inventory)
